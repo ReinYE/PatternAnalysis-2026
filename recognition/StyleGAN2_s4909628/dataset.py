@@ -86,12 +86,15 @@ def collect_record(data_root, source_split, included_classes, subject_mapping):
         if not class_dir.is_dir():
             raise FileNotFoundError(f"Directory dose not exit: {class_dir}")
 
-        if image_path.suffix.lower() not in {".jpg", ".jpeg"}:
-            continue
-
         count_before = len(records)
 
         for image_path in sorted(class_dir.iterdir()):
+            if not image_path.is_file():
+                continue
+
+            if image_path.suffix.lower() not in {".jpg", ".jpeg"}:
+                continue
+
             match = filename_pattern.fullmatch(image_path.stem)
             if match is None:
                 raise ValueError(f"Unexpected JPEG filename: {image_path.name}")
