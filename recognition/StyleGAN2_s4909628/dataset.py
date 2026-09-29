@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import json
 import re
 from pathlib import Path
@@ -86,6 +86,11 @@ def collect_record(data_root, source_split, included_classes, subject_mapping):
         if not class_dir.is_dir():
             raise FileNotFoundError(f"Directory dose not exit: {class_dir}")
 
+        if image_path.suffix.lower() not in {".jpg", ".jpeg"}:
+            continue
+
+        count_before = len(records)
+
         for image_path in sorted(class_dir.iterdir()):
             match = filename_pattern.fullmatch(image_path.stem)
             if match is None:
@@ -120,7 +125,7 @@ def collect_record(data_root, source_split, included_classes, subject_mapping):
                 )
             )
 
-        if len(records) == 0:
+        if len(records) == count_before:
             raise RuntimeError(f"No JPEG images found in: {class_dir}")
 
     records.sort(
@@ -259,3 +264,129 @@ def validate_splits(splits, source_train, source_test):
         }
 
     return summary
+
+
+def create_or_load_splits(
+    data_root,
+    metadata_path,
+    manifest_path,
+    included_classes=("AD",),
+    val_ratio=0.2,
+    seed=42,
+):
+    data_root = Path(data_root)
+    metadata_path = Path(metadata_path)
+    manifest_path = Path(manifest_path)
+
+    if not isinstance(included_classes, (tuple, list)) or not included_classes:
+        raise ValueError("included_classes must be a non-empty tuple or list.")
+
+    if any(name not in ("AD", "NC") for name in included_classes):
+        raise ValueError("included_classes can only contain AD and NC.")
+
+    if len(included_classes) != len(set(included_classes)):
+        raise ValueError("included_classes contains duplicate classes.")
+
+    if not 0 < val_ratio < 1:
+        raise ValueError(f"Invalid validation ratio: {val_ratio!r}")
+
+    if type(seed) is not int:
+        raise ValueError("seed must be an integer.")
+
+    included_classes = tuple(sorted(included_classes))
+
+    config = {
+        "included_classes": list(included_classes),
+        "val_ratio": val_ratio,
+        "seed": seed,
+    }
+
+    subject_mapping = load_subject_mapping(metadata_path)
+
+    source_train = collect_record(data_root, "train", included_classes, subject_mapping)
+
+    source_test = collect_record(data_root, "test", included_classes, subject_mapping)
+
+    loaded = manifest_path.exists()
+
+    if loaded:
+        with manifest_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+
+        if not isinstance(payload, dict):
+            raise ValueError("The split manifest must be a dictionary.")
+
+        if payload.get("schema_version") != 1:
+            raise ValueError("Unsupported split manifest version.")
+
+        if payload.get("config") != config:
+            raise ValueError(
+                "The saved split configuration does not match this run. "
+                "Use the original configuration or a different manifest_path."
+            )
+
+        saved_splits = payload.get("splits")
+
+        if not isinstance(saved_splits, dict) or set(saved_splits) != {
+            "train",
+            "validation",
+            "test",
+        }:
+            raise ValueError("The manifest must contain train, validation and test.")
+
+        splits = {}
+
+        for name, items in saved_splits.items():
+            if not isinstance(items, list):
+                raise ValueError(f"{name} must contain a list of records.")
+
+            records = []
+
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError(f"Invalid record in {name}")
+
+                records.append(SliceRecord(**item))
+
+            splits[name] = records
+    else:
+        splits = split_by_patient(source_train, val_ratio, seed)
+
+        splits["test"] = source_test.copy()
+
+    summary = validate_splits(splits, source_train, source_test)
+
+    if not loaded:
+        payload = {
+            "schema_version": 1,
+            "config": config,
+            "splits": {
+                name: [asdict(record) for record in records]
+                for name, records in splits.items()
+            },
+        }
+
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with manifest_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+
+    action = "Loaded" if loaded else "Created"
+    print(f"{action} split manifest: {manifest_path}")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    return splits
+
+
+if __name__ == "__main__":
+    splits = create_or_load_splits(
+        data_root="/home/groups/comp3710/ADNI/AD_NC",
+        metadata_path="/home/groups/comp3710/ADNI/meta_data_with_label.json",
+        manifest_path=(
+            Path(__file__).resolve().parent / "splits" / "splits_ad_nc_seed42.json"
+        ),
+        included_classes=("AD", "NC"),
+        val_ratio=0.2,
+        seed=42,
+    )
