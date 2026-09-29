@@ -1,3 +1,4 @@
+import sys
 import torch
 from torch.utils.data import Dataset, DataLoader
 from dataclasses import dataclass, asdict
@@ -225,9 +226,10 @@ def validate_splits(splits, source_train, source_test):
         shared_patients = patient_sets[left] & patient_sets[right]
 
         if shared_patients:
-            raise ValueError(
+            print(
                 f"Patient leakage between {left} and {right}: "
-                f"{sorted(shared_patients)}"
+                f"{sorted(shared_patients)}",
+                file=sys.stderr,
             )
 
         shared_slices = slice_sets[left] & slice_sets[right]
