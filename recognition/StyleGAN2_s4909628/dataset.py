@@ -1,13 +1,17 @@
 import sys
-import torch
-from torch.utils.data import Dataset, DataLoader
-from dataclasses import dataclass, asdict
 import json
 import re
-from pathlib import Path
 import random
 import math
+import numpy as np
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+
+from dataclasses import dataclass, asdict
+from pathlib import Path
 from collections import Counter
+from PIL import Image, ImageOps
 
 
 @dataclass(frozen=True)
@@ -384,14 +388,58 @@ def create_or_load_splits(
     return splits
 
 
-if __name__ == "__main__":
-    splits = create_or_load_splits(
-        data_root="/home/groups/comp3710/ADNI/AD_NC",
-        metadata_path="/home/groups/comp3710/ADNI/meta_data_with_label.json",
-        manifest_path=(
-            Path(__file__).resolve().parent / "splits" / "splits_ad_nc_seed42.json"
-        ),
-        included_classes=("AD", "NC"),
-        val_ratio=0.2,
-        seed=42,
-    )
+def preprocess_image(image):
+    image = image.convert("L")
+
+    width, height = image.size
+    side = max(width, height)
+
+    width_padding = side - width
+    height_padding = side - height
+
+    left = width_padding // 2
+    right = width_padding - left
+
+    top = height_padding // 2
+    bottom = height_padding - top
+
+    # padding
+    image = ImageOps.expand(image, border=(left, top, right, bottom), fill=0)
+
+    # convert to array [-1, 1]
+    pixels = np.array(image, dtype=np.float32)
+    pixels = (pixels - 127.5) / 127.5
+
+    # convert to tensor, adding C = 1 --> [C, H, W]
+    tensor = torch.from_numpy(pixels).unsqueeze(0)
+
+    return tensor
+
+
+class ADNIDataset(Dataset):
+    def __init__(
+        self, records, data_root="/home/groups/comp3710/ADNI/AD_NC", image_size=256
+    ):
+        super().__init__()
+        self.data_root = Path(data_root)
+        self.records = tuple(records)
+        self.image_size = image_size
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, index):
+        record = self.records[index]
+        image_path = self.data_root / record.relative_path
+
+        with Image.open(image_path) as image:
+            tensor = preprocess_image(image)
+
+        valid_shape = torch.Size([1, self.image_size, self.image_size])
+
+        if tensor.shape != valid_shape:
+            raise ValueError(
+                f"Invalid image shape for {image_path}: got {tuple(tensor.shape)}, wanted {valid_shape}."
+            )
+
+        return tensor
