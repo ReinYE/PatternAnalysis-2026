@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 import random
 import math
+from collections import Counter
 
 
 @dataclass(frozen=True)
@@ -156,3 +157,105 @@ def split_by_patient(records, val_ratio, seed=42):
     return {"train": train_records, "validation": val_records}
 
 
+# Validate patient isolation and preservation of original records.
+def validate_splits(splits, source_train, source_test):
+    expected_names = {"train", "validation", "test"}
+    if set(splits) != expected_names:
+        raise ValueError("splits must contain exactly: train, validation, test.")
+
+    groups = {
+        "source_train": (source_train, "train"),
+        "source_test": (source_test, "test"),
+        "train": (splits["train"], "train"),
+        "validation": (splits["validation"], "train"),
+        "test": (splits["test"], "test"),
+    }
+
+    for name, (records, expected_source) in groups.items():
+        if not records:
+            raise ValueError(f"{name} contains no records.")
+
+        slice_keys = [(r.image_id, r.slice_index) for r in records]
+
+        if len(slice_keys) != len(set(slice_keys)):
+            raise ValueError(f"{name} contains duplicate image/slice pairs.")
+
+        paths = [r.relative_path for r in records]
+
+        if len(paths) != len(set(paths)):
+            raise ValueError(f"{name} contains duplicate image paths.")
+
+        for record in records:
+            if not record.subject_id:
+                raise ValueError(
+                    f"{name}: missing patient ID for " f"{record.relative_path}."
+                )
+
+            if record.source_split != expected_source:
+                raise ValueError(
+                    f"{name}: {record.relative_path} has source_split="
+                    f"{record.source_split!r}; "
+                    f"expected {expected_source!r}."
+                )
+
+    patient_sets = {
+        name: {r.subject_id for r in records} for name, records in splits.items()
+    }
+
+    slice_sets = {
+        name: {(r.image_id, r.slice_index) for r in records}
+        for name, records in splits.items()
+    }
+
+    pairs = (
+        ("train", "validation"),
+        ("train", "test"),
+        ("validation", "test"),
+    )
+
+    for left, right in pairs:
+        shared_patients = patient_sets[left] & patient_sets[right]
+
+        if shared_patients:
+            raise ValueError(
+                f"Patient leakage between {left} and {right}: "
+                f"{sorted(shared_patients)}"
+            )
+
+        shared_slices = slice_sets[left] & slice_sets[right]
+
+        if shared_slices:
+            raise ValueError(
+                f"Shared image slices between {left} and {right}: "
+                f"{sorted(shared_slices)}"
+            )
+
+    combined_train = splits["train"] + splits["validation"]
+
+    if Counter(combined_train) != Counter(source_train):
+        raise ValueError(
+            "train + validation must contain exactly " "the original training records."
+        )
+
+    if Counter(splits["test"]) != Counter(source_test):
+        raise ValueError("test must contain exactly the original test records.")
+
+    summary = {}
+
+    for name, records in splits.items():
+        diagnoses = sorted({r.diagnosis for r in records})
+
+        summary[name] = {
+            "patients": len(patient_sets[name]),
+            "scans": len({r.image_id for r in records}),
+            "slices": len(records),
+            "patients_by_diagnosis": {
+                diagnosis: len(
+                    {r.subject_id for r in records if r.diagnosis == diagnosis}
+                )
+                for diagnosis in diagnoses
+            },
+            "slices_by_diagnosis": dict(Counter(r.diagnosis for r in records)),
+        }
+
+    return summary
