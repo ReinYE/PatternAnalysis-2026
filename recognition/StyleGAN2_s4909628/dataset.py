@@ -443,3 +443,82 @@ class ADNIDataset(Dataset):
             )
 
         return tensor
+
+
+def build_dataloaders(
+    data_root,
+    metadata_path,
+    manifest_path,
+    included_classes=("AD",),
+    val_ratio=0.2,
+    split_seed=42,
+    image_size=256,
+    batch_size=16,
+    num_workers=0,
+    pin_memory=False,
+    loader_seed=42,
+    drop_last_train=True,
+):
+    splits = create_or_load_splits(
+        data_root=data_root,
+        metadata_path=metadata_path,
+        manifest_path=manifest_path,
+        included_classes=included_classes,
+        val_ratio=val_ratio,
+        seed=split_seed,
+    )
+
+    train_dataset = ADNIDataset(
+        data_root=data_root, records=splits["train"], image_size=image_size
+    )
+    if drop_last_train and len(train_dataset) < batch_size:
+        raise RuntimeError(
+            f"Training dataset contains {len(train_dataset)} images, "
+            f"fewer than batch_size={batch_size}; "
+            "drop_last_train=True would produce no batches."
+        )
+
+    test_dataset = ADNIDataset(
+        data_root=data_root, records=splits["test"], image_size=image_size
+    )
+
+    val_dataset = ADNIDataset(
+        data_root=data_root, records=splits["validation"], image_size=image_size
+    )
+
+    train_generator = torch.Generator()
+    train_generator.manual_seed(loader_seed)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=train_generator,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+        drop_last=drop_last_train,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+    )
+
+    return (
+        train_dataset,
+        train_loader,
+        test_dataset,
+        test_loader,
+        val_dataset,
+        val_loader,
+    )
