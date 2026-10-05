@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=recognition_test
+#SBATCH --job-name=convgan_adni
 #SBATCH --partition=comp3710
 #SBATCH --account=comp3710
 
@@ -13,5 +13,5 @@
 #SBATCH --error=logs/%x_%j.err
 
 conda activate torch
-python dataset.py
+python -u train.py
 
