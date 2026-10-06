@@ -35,7 +35,24 @@ def generator_loss(fake_logits):
     return -fake_logits.mean()
 
 
-def train_one_epoch(
+def discriminator_bce_loss(real_logits, fake_logits):
+    real_loss = F.binary_cross_entropy_with_logits(
+        real_logits, torch.ones_like(real_logits)
+    )
+
+    fake_loss = F.binary_cross_entropy_with_logits(
+        fake_logits, torch.zeros_like(fake_logits)
+    )
+
+    total_loss = real_loss + fake_loss
+    return total_loss, real_loss, fake_loss
+
+
+def generator_bce_loss(fake_logits):
+    return F.binary_cross_entropy_with_logits(fake_logits, torch.ones_like(fake_logits))
+
+
+def train_one_epoch_dcgan(
     generator, discriminator, train_loader, optimizer_g, optimizer_d, device, latent_dim
 ):
     generator.train()
@@ -65,7 +82,7 @@ def train_one_epoch(
         real_logits = discriminator(real_images)
         fake_logits_for_d = discriminator(fake_images)
 
-        d_loss, d_real_loss, d_fake_loss = discriminator_hinge_loss(
+        d_loss, d_real_loss, d_fake_loss = discriminator_bce_loss(
             real_logits,
             fake_logits_for_d,
         )
@@ -86,7 +103,7 @@ def train_one_epoch(
         z = torch.randn(current_batch_size, latent_dim, device=device)
         fake_images = generator(z)
         fake_logits_for_g = discriminator(fake_images)
-        g_loss = generator_loss(fake_logits_for_g)
+        g_loss = generator_bce_loss(fake_logits_for_g)
         if not torch.isfinite(g_loss).item():
             raise FloatingPointError("Non-finite generator loss detected")
 
@@ -123,7 +140,7 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(
+def evaluate_dcgan(
     generator, discriminator, data_loader, device, latent_dim, random_seed=12345
 ):
     generator.eval()
@@ -147,13 +164,13 @@ def evaluate(
         real_logits = discriminator(real_images)
         fake_logits = discriminator(fake_images)
 
-        d_loss, d_real_loss, d_fake_loss = discriminator_hinge_loss(
+        d_loss, d_real_loss, d_fake_loss = discriminator_bce_loss(
             real_logits,
             fake_logits,
         )
         if not torch.isfinite(d_loss).item():
             raise FloatingPointError("Non-finite discriminator loss detected")
-        g_loss = generator_loss(fake_logits)
+        g_loss = generator_bce_loss(fake_logits)
         if not torch.isfinite(g_loss).item():
             raise FloatingPointError("Non-finite generator loss detected")
 
@@ -227,7 +244,7 @@ def plot_training_history(history, output_path):
         [metrics["generator_loss"] for metrics in valid],
         label="Validation",
     )
-    axes[0, 0].set_title("Generator hinge loss")
+    axes[0, 0].set_title("Generator adversarial loss")
     axes[0, 0].set_xlabel("Epoch")
     axes[0, 0].legend()
     axes[0, 0].grid(alpha=0.25)
@@ -242,7 +259,7 @@ def plot_training_history(history, output_path):
         [metrics["discriminator_loss"] for metrics in valid],
         label="Validation",
     )
-    axes[0, 1].set_title("Discriminator hinge loss")
+    axes[0, 1].set_title("Discriminator adversarial loss")
     axes[0, 1].set_xlabel("Epoch")
     axes[0, 1].legend()
     axes[0, 1].grid(alpha=0.25)
@@ -269,7 +286,7 @@ def plot_training_history(history, output_path):
         linestyle="--",
         label="Validation fake",
     )
-    axes[1, 0].set_title("Discriminator scores")
+    axes[1, 0].set_title("Discriminator logits")
     axes[1, 0].set_xlabel("Epoch")
     axes[1, 0].legend()
     axes[1, 0].grid(alpha=0.25)
@@ -284,7 +301,6 @@ def plot_training_history(history, output_path):
         [metrics["score_gap"] for metrics in valid],
         label="Validation",
     )
-    axes[1, 1].axhline(2.0, color="black", linestyle=":", label="Hinge margins")
     axes[1, 1].set_title("Real score - fake score")
     axes[1, 1].set_xlabel("Epoch")
     axes[1, 1].legend()
@@ -307,8 +323,19 @@ def load_training_checkpoint(
     train_loader,
     device,
     expected_latent_dim,
+    expected_model_name,
 ):
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint_model_name = checkpoint.get(
+        "model_name",
+        checkpoint.get("config", {}).get("model_name"),
+    )
+
+    if checkpoint_model_name != expected_model_name:
+        raise ValueError(
+            f"Checkpoint model_name={checkpoint_model_name!r}, "
+            f"but the current model is {expected_model_name!r}."
+        )
     checkpoint_latent_dim = checkpoint.get("latent_dim", expected_latent_dim)
     if checkpoint_latent_dim != expected_latent_dim:
         raise ValueError(
@@ -361,6 +388,7 @@ def save_checkpoint(
     test_metrics=None,
 ):
     checkpoint = {
+        "model_name": config["model_name"],
         "epoch": completed_epoch,
         "latent_dim": config["latent_dim"],
         "image_size": config["image_size"],
@@ -397,7 +425,8 @@ def main():
         Path(__file__).resolve().parent / "splits" / "splits_ad_nc_seed42.json"
     )
 
-    run_name = "convgan_adni"
+    model_name = "dcgan"
+    run_name = "dcgan_adni"
 
     home_dir = Path(__file__).resolve().parent
     # Set this to latest_checkpoint_path to continue an interrupted run.
@@ -421,7 +450,7 @@ def main():
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    # Training configuration for the spectral-normalized Hinge GAN.
+    # Training configuration for the DCGAN.
     epochs = 100
     batch_size = 16
     learning_rate_g = 2e-4
@@ -432,6 +461,7 @@ def main():
     num_sample_images = 64
     sample_every = 5
     checkpoint_every = 10
+    adam_betas = (0.5, 0.999)
 
     # data loader configration
     split_seed = 42
@@ -482,29 +512,31 @@ def main():
     print("Validation images:", len(valid_dataset))
     print("Test images:", len(test_dataset))
 
-    generator = modules.ConvGANGenerator(latent_dim).to(device)
-    discriminator = modules.ConvGANDiscriminator().to(device)
+    generator = modules.DCGANGenerator(latent_dim=latent_dim).to(device)
+    discriminator = modules.DCGANDiscriminator().to(device)
 
     optimizer_g = torch.optim.Adam(
-        generator.parameters(), lr=learning_rate_g, betas=(0.0, 0.9)
+        generator.parameters(), lr=learning_rate_g, betas=adam_betas
     )
 
     optimizer_d = torch.optim.Adam(
-        discriminator.parameters(), lr=learning_rate_d, betas=(0.0, 0.9)
+        discriminator.parameters(), lr=learning_rate_d, betas=adam_betas
     )
 
     config = {
+        "model_name": model_name,
         "run_name": run_name,
         "epochs": epochs,
         "batch_size": batch_size,
         "learning_rate_g": learning_rate_g,
         "learning_rate_d": learning_rate_d,
+        "adam_betas": list(adam_betas),
         "latent_dim": latent_dim,
         "random_seed": random_seed,
         "validation_seed": validation_seed,
-        "loss": "hinge",
-        "spectral_normalization": True,
-        "minibatch_stddev": True,
+        "loss": "bce_with_logits",
+        "spectral_normalization": False,
+        "minibatch_stddev": False,
         "manifest_path": str(manifest_path.resolve()),
         "included_classes": included_classes,
         "split_seed": split_seed,
@@ -531,6 +563,7 @@ def main():
             train_loader=train_loader,
             device=device,
             expected_latent_dim=latent_dim,
+            expected_model_name=model_name,
         )
         if saved_fixed_noise is not None:
             fixed_noise = saved_fixed_noise
@@ -547,7 +580,7 @@ def main():
 
     for epoch_index in range(start_epoch, epochs):
         epoch_start = time.perf_counter()
-        train_metrics = train_one_epoch(
+        train_metrics = train_one_epoch_dcgan(
             generator=generator,
             discriminator=discriminator,
             train_loader=train_loader,
@@ -556,7 +589,7 @@ def main():
             device=device,
             latent_dim=latent_dim,
         )
-        valid_metrics = evaluate(
+        valid_metrics = evaluate_dcgan(
             generator=generator,
             discriminator=discriminator,
             data_loader=valid_loader,
@@ -626,7 +659,7 @@ def main():
                 train_loader=train_loader,
             )
 
-    test_metrics = evaluate(
+    test_metrics = evaluate_dcgan(
         generator=generator,
         discriminator=discriminator,
         data_loader=test_loader,

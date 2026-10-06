@@ -2,11 +2,12 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import spectral_norm
 
-
 IMAGE_SIZE = 256
 IMAGE_CHANNELS = 1
 INITIAL_SIZE = 4
 INITIAL_CHANNELS = 512
+
+"""Baseline"""
 
 
 def _generator_block(in_channels, out_channels):
@@ -43,16 +44,55 @@ def _discriminator_block(in_channels, out_channels):
     )
 
 
+def _dcgan_generator_block(
+    in_channels, out_channels, kernel_size=4, stride=2, padding=1
+):
+    return nn.Sequential(
+        nn.ConvTranspose2d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            bias=False,
+        ),
+        nn.BatchNorm2d(out_channels),
+        nn.ReLU(inplace=True),
+    )
+
+
+def _dcgan_discriminator_block(in_channels, out_channels, use_batchnorm=True):
+    layers = [
+        nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=4,
+            stride=2,
+            padding=1,
+            bias=False,
+        )
+    ]
+
+    if use_batchnorm:
+        layers.append(nn.BatchNorm2d(out_channels))
+
+    layers.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
+
+    return nn.Sequential(*layers)
+
+
 def _initialize_weights(module):
-    #  DCGAN-style initialization, including spectral-normalized layers.
-    if isinstance(module, (nn.Conv2d, nn.Linear)):
+    # Shared initialization for ConvGAN and DCGAN.
+    if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
         weight = getattr(module, "weight_orig", module.weight)
         nn.init.normal_(weight, mean=0.0, std=0.02)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.BatchNorm2d):
-        nn.init.normal_(module.weight, mean=1.0, std=0.02)
-        nn.init.zeros_(module.bias)
+        if module.weight is not None:
+            nn.init.normal_(module.weight, mean=1.0, std=0.02)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
 
 
 class ConvGANGenerator(nn.Module):
@@ -161,4 +201,95 @@ class ConvGANDiscriminator(nn.Module):
         # [B, 512 + 1, 4, 4]
         # Add standard deviation as a new channel
         features = self.minibatch_stddev(features)
+        return self.classifier(features)
+
+
+class DCGANGenerator(nn.Module):
+    def __init__(self, latent_dim=128):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        # [B, latent_dim, 1, 1] -> [B, 512, 4, 4]
+        self.seed = _dcgan_generator_block(
+            latent_dim,
+            INITIAL_CHANNELS,
+            kernel_size=INITIAL_SIZE,
+            stride=1,
+            padding=0,
+        )
+
+        # 4 -> 8 -> 16 -> 32 -> 64 -> 128
+        self.features = nn.Sequential(
+            _dcgan_generator_block(INITIAL_CHANNELS, 512),
+            _dcgan_generator_block(512, 256),
+            _dcgan_generator_block(256, 128),
+            _dcgan_generator_block(128, 64),
+            _dcgan_generator_block(64, 32),
+        )
+
+        # [B, 32, 128, 128] -> [B, 1, 256, 256]
+        self.to_image = nn.Sequential(
+            nn.ConvTranspose2d(
+                32,
+                IMAGE_CHANNELS,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                bias=False,
+            ),
+            nn.Tanh(),
+        )
+
+        self.apply(_initialize_weights)
+
+    def forward(self, z):
+        if z.ndim != 2 or z.shape[1] != self.latent_dim:
+            raise ValueError(
+                f"Expected latent vectors with shape "
+                f"[batch, {self.latent_dim}], "
+                f"but received {tuple(z.shape)}"
+            )
+
+        z = z.reshape(z.shape[0], self.latent_dim, 1, 1)
+
+        features = self.seed(z)
+        features = self.features(features)
+        return self.to_image(features)
+
+
+class DCGANDiscriminator(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # 256 -> 128 -> 64 -> 32 -> 16 -> 8 -> 4
+        self.features = nn.Sequential(
+            _dcgan_discriminator_block(IMAGE_CHANNELS, 32, use_batchnorm=False),
+            _dcgan_discriminator_block(32, 64),
+            _dcgan_discriminator_block(64, 128),
+            _dcgan_discriminator_block(128, 256),
+            _dcgan_discriminator_block(256, 512),
+            _dcgan_discriminator_block(512, 512),
+        )
+
+        # [B, 512, 4, 4] -> [B, 1, 1, 1] -> [B, 1]
+        self.classifier = nn.Sequential(
+            nn.Conv2d(
+                512, 1, kernel_size=INITIAL_SIZE, stride=1, padding=0, bias=False
+            ),
+            nn.Flatten(start_dim=1),
+        )
+
+        self.apply(_initialize_weights)
+
+    def forward(self, image):
+        expected_shape = (IMAGE_CHANNELS, IMAGE_SIZE, IMAGE_SIZE)
+
+        if image.ndim != 4 or tuple(image.shape[1:]) != expected_shape:
+            raise ValueError(
+                f"Expected images with shape "
+                f"[batch, {IMAGE_CHANNELS}, {IMAGE_SIZE}, {IMAGE_SIZE}], "
+                f"but received {tuple(image.shape)}"
+            )
+
+        features = self.features(image)
         return self.classifier(features)

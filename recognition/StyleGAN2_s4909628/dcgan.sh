@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=convgan_adni
+#SBATCH --job-name=dcgan_adni
 #SBATCH --partition=comp3710
 #SBATCH --account=comp3710
 

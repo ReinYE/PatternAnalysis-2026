@@ -1,27 +1,33 @@
-from modules import ConvGANGenerator, IMAGE_SIZE, IMAGE_CHANNELS
+from modules import DCGANGenerator, IMAGE_SIZE, IMAGE_CHANNELS
 
 import torch
 from torchvision.utils import save_image
-
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 import argparse
 from pathlib import Path
 
 
-def load_generator(checkpoint_path, device):
+def load_dcgan_generator(checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+
+    # This prediction script only supports DCGAN checkpoints.
+    model_name = checkpoint.get("model_name")
+
+    if model_name != "dcgan":
+        raise ValueError(
+            f"Expected a DCGAN checkpoint, " f"but received model_name={model_name!r}."
+        )
+
     if (
         checkpoint["image_size"] != IMAGE_SIZE
         or checkpoint["image_channels"] != IMAGE_CHANNELS
     ):
         raise ValueError("Checkpoint image dimensions do not match this model.")
 
-    generator = ConvGANGenerator(latent_dim=checkpoint["latent_dim"])
-    generator.load_state_dict(checkpoint["generator_state_dict"])
+    generator = DCGANGenerator(latent_dim=checkpoint["latent_dim"])
+
+    generator.load_state_dict(checkpoint["generator_state_dict"], strict=True)
+
     generator = generator.to(device)
     generator.eval()
 
@@ -51,7 +57,7 @@ def save_generated_grid(generator, fixed_noise, output_path, nrow=8):
 
 def main():
     parser = argparse.ArgumentParser(
-        description=("Generate a preview grid with the ConvGAN baseline.")
+        description="Generate a preview grid with the DCGAN baseline."
     )
 
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -71,7 +77,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    checkpoint, generator = load_generator(args.checkpoint, device)
+    checkpoint, generator = load_dcgan_generator(args.checkpoint, device)
 
     if args.use_fixed_noise:
         fixed_noise = checkpoint.get("fixed_noise")
