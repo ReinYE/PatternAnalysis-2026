@@ -1,5 +1,7 @@
+import math
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 from torch.nn.utils import spectral_norm
 
 IMAGE_SIZE = 256
@@ -293,3 +295,219 @@ class DCGANDiscriminator(nn.Module):
 
         features = self.features(image)
         return self.classifier(features)
+
+
+# StyleGAN2
+def normalize_second_moment(x, dim=-1, eps=1e-8):
+    # Normalize each vector by its root mean square.
+    rms = torch.sqrt(x.square().mean(dim=dim, keepdim=True) + eps)
+    return x / rms
+
+
+# Linear layer using equalized learning-rate parameterization.
+# The stored weight is scaled by lr_multiplier / sqrt(fan_in) during each forward pass.
+class EqualizedLinear(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        *,
+        activation="linear",
+        lr_multiplier=1.0,
+        bias_init=0.0,
+    ):
+        super().__init__()
+        if in_features < 1 or out_features < 1 or lr_multiplier <= 0:
+            raise ValueError("Dimensions and lr_multiplier must be positive.")
+
+        if activation not in ("linear", "lrelu"):
+            raise ValueError("activation must be 'linear' or 'lrelu'.")
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.activation = activation
+        self.lr_multiplier = float(lr_multiplier)
+
+        self.weight_gain = self.lr_multiplier / math.sqrt(in_features)
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+
+        self.bias = nn.Parameter(torch.full((out_features,), float(bias_init)))
+
+        nn.init.normal_(self.weight, mean=0.0, std=1.0 / self.lr_multiplier)
+
+    def forward(self, x):
+        effective_weight = self.weight * self.weight_gain
+        effective_bias = self.bias * self.lr_multiplier
+
+        y = F.linear(x, effective_weight, effective_bias)
+
+        if self.activation == "lrelu":
+            y = F.leaky_relu(y, negative_slope=0.2)
+            # Leaky ReLU gain
+            y = y * math.sqrt(2.0 / (1 + 0.2**2))
+
+        return y
+
+
+class MappingNetwork(nn.Module):
+    def __init__(
+        self,
+        num_ws,
+        z_dim=512,
+        w_dim=512,
+        num_layers=8,
+        lr_multiplier=0.01,
+        w_avg_beta=0.995,
+    ):
+        super().__init__()
+
+        if min(num_ws, z_dim, w_dim, num_layers) < 1:
+            raise ValueError("Dimensions and layer counts must be positive.")
+
+        if not 0 <= w_avg_beta < 1:
+            raise ValueError("w_avg_beta must be in [0, 1).")
+
+        self.z_dim = z_dim
+        self.w_dim = w_dim
+        self.num_ws = num_ws
+        self.w_avg_beta = w_avg_beta
+
+        self.layers = nn.ModuleList(
+            [
+                EqualizedLinear(
+                    in_features=z_dim if i == 0 else w_dim,
+                    out_features=w_dim,
+                    activation="lrelu",
+                    lr_multiplier=lr_multiplier,
+                )
+                for i in range(num_layers)
+            ]
+        )
+
+        self.register_buffer("w_avg", torch.zeros(w_dim))
+
+    def forward(self, z, *, update_w_avg=True):
+        if z.ndim != 2 or z.shape[1] != self.z_dim or z.shape[0] == 0:
+            raise ValueError(
+                f"Expected nonempty [B, {self.z_dim}], " f"got {tuple(z.shape)}."
+            )
+
+        w = normalize_second_moment(z.to(dtype=torch.float32))
+
+        for layer in self.layers:
+            w = layer(w)
+
+        if self.training and update_w_avg:
+            with torch.no_grad():
+                batch_mean = w.detach().mean(dim=0)
+                self.w_avg.mul_(self.w_avg_beta)
+                self.w_avg.add_(batch_mean, alpha=1.0 - self.w_avg_beta)
+
+        ws = w.unsqueeze(1).repeat(1, self.num_ws, 1)
+
+        return ws
+
+
+class EqualizedConv2d(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=3,
+        *,
+        bias=True,
+        activation="linear",
+    ):
+        super().__init__()
+        if min(in_channels, out_channels, kernel_size) < 1:
+            raise ValueError("Channels and kernel_size must be positive.")
+        if kernel_size % 2 == 0:
+            raise ValueError("Use an odd kernel size.")
+        if activation not in ("linear", "lrelu"):
+            raise ValueError("Activation must be 'linear' or 'lrelu'.")
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.padding = kernel_size // 2
+        self.activation = activation
+
+        fan_in = in_channels * (kernel_size**2)
+        self.weight_gain = 1.0 / math.sqrt(fan_in)
+
+        self.weight = nn.Parameter(
+            torch.randn(out_channels, in_channels, kernel_size, kernel_size)
+        )
+
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_channels))
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, x):
+        if x.ndim != 4 or x.shape[1] != self.in_channels:
+            raise ValueError(
+                f"Expected [B, {self.in_channels}, H, W], " f"got {tuple(x.shape)}."
+            )
+
+        effective_weight = self.weight * self.weight_gain
+
+        y = F.conv2d(x, effective_weight, self.bias, stride=1, padding=self.padding)
+
+        if self.activation == "lrelu":
+            negative_slope = 0.2
+            y = F.leaky_relu(y, negative_slope=negative_slope)
+            # Leaky ReLU gain
+            y = y * math.sqrt(2.0 / (1.0 + negative_slope**2))
+
+        return y
+
+
+def make_resample_filter():
+    taps = torch.tensor([1.0, 3.0, 3.0, 1.0], dtype=torch.float32)
+
+    kernel = torch.outer(taps, taps)
+    # Normalization
+    kernel = kernel / kernel.sum()
+
+    return kernel.reshape(1, 1, 4, 4)
+
+
+class FilteredUpsample2d(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.register_buffer("filter", make_resample_filter())
+
+    def forward(self, x):
+        if x.ndim != 4:
+            raise ValueError("Expected [B, C, H, W].")
+
+        channels = x.shape[1]
+
+        kernel = self.filter.to(dtype=x.dtype) * 4.0
+
+        kernel = kernel.repeat(channels, 1, 1, 1)
+
+        return F.conv_transpose2d(x, kernel, stride=2, padding=1, groups=channels)
+
+
+class FilteredDownsample2d(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.register_buffer("filter", make_resample_filter())
+
+    def forward(self, x):
+        if x.ndim != 4:
+            raise ValueError("Expected [B, C, H, W].")
+
+        if x.shape[-2] % 2 or x.shape[-1] % 2:
+            raise ValueError("Height and width must be even.")
+
+        channels = x.shape[1]
+
+        kernel = self.filter.to(dtype=x.dtype)
+
+        kernel = kernel.repeat(channels, 1, 1, 1)
+
+        return F.conv2d(x, kernel, stride=2, padding=1, groups=channels)
