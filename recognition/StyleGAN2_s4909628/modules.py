@@ -511,3 +511,187 @@ class FilteredDownsample2d(nn.Module):
         kernel = kernel.repeat(channels, 1, 1, 1)
 
         return F.conv2d(x, kernel, stride=2, padding=1, groups=channels)
+
+
+class ModulatedConv2d(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        w_dim=512,
+        kernel_size=3,
+        *,
+        demodulate=True,
+        eps=1e-8,
+    ):
+        super().__init__()
+        if min(in_channels, out_channels, w_dim, kernel_size) < 1:
+            raise ValueError("Dimensions must be positive.")
+
+        if kernel_size % 2 == 0:
+            raise ValueError("Use an odd kernel_size.")
+
+        if eps <= 0:
+            raise ValueError("eps must be positive.")
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.w_dim = w_dim
+        self.kernel_size = kernel_size
+        self.padding = kernel_size // 2
+        self.demodulate = demodulate
+        self.eps = eps
+
+        self.affine = EqualizedLinear(
+            w_dim, in_channels, activation="linear", lr_multiplier=1.0, bias_init=1.0
+        )
+
+        # Translate w into one modulation coefficient per input channel.
+        self.weight = nn.Parameter(
+            torch.randn(out_channels, in_channels, kernel_size, kernel_size)
+        )
+
+        self.weight_gain = 1.0 / math.sqrt(in_channels * (kernel_size**2))
+
+    def forward(self, x, w):
+        if x.ndim != 4 or x.shape[1] != self.in_channels:
+            raise ValueError(
+                f"Expected [B, {self.in_channels}, H, W], " f"got {tuple(x.shape)}."
+            )
+
+        batch_size, _, height, width = x.shape
+
+        if batch_size == 0:
+            raise ValueError("Batch must not be empty.")
+
+        if w.ndim != 2 or tuple(w.shape) != (batch_size, self.w_dim):
+            raise ValueError(
+                f"Expected w shape [{batch_size}, {self.w_dim}], "
+                f"got {tuple(w.shape)}."
+            )
+
+        # [B, in_channels]
+        styles = self.affine(w)
+
+        # [B, out_channels, in_channels, k, k]
+        sample_weight = self.weight.unsqueeze(0) * styles[:, None, :, None, None]
+
+        if self.demodulate:
+            # [B, out_channels, 1, 1, 1]
+            energy = sample_weight.square().sum(dim=(2, 3, 4), keepdim=True)
+
+            sample_weight = sample_weight * torch.rsqrt(energy + self.eps)
+        else:
+            sample_weight = sample_weight * self.weight_gain
+
+        grouped_input = x.reshape(1, batch_size * self.in_channels, height, width)
+        grouped_weight = sample_weight.reshape(
+            batch_size * self.out_channels,
+            self.in_channels,
+            self.kernel_size,
+            self.kernel_size,
+        )
+
+        y = F.conv2d(
+            grouped_input, grouped_weight, padding=self.padding, groups=batch_size
+        )
+
+        return y.reshape(batch_size, self.out_channels, height, width)
+
+
+# Style convolution, optional noise, bias, and activation.
+class StyleConv(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        resolution,
+        w_dim=512,
+        kernel_size=3,
+        *,
+        use_noise=True,
+    ):
+        super().__init__()
+
+        if resolution < 1:
+            raise ValueError("resolution must be positive.")
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.resolution = resolution
+        self.use_noise = use_noise
+
+        self.negative_slope = 0.2
+        self.activation_gain = math.sqrt(2.0 / (1.0 + self.negative_slope**2))
+
+        self.conv = ModulatedConv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            w_dim=w_dim,
+            kernel_size=kernel_size,
+            demodulate=True,
+        )
+
+        self.bias = nn.Parameter(torch.zeros(out_channels))
+
+        if use_noise:
+            self.noise_strength = nn.Parameter(torch.zeros(()))
+
+            self.register_buffer(
+                "noise_const", torch.randn(1, 1, resolution, resolution)
+            )
+        else:
+            self.register_parameter("noise_strength", None)
+            self.register_buffer("noise_const", None)
+
+    def forward(self, x, w, *, noise_mode="random"):
+        if noise_mode not in ("random", "const", "none"):
+            raise ValueError("noise_mode must be 'random', 'const', or 'none'.")
+
+        expected = (self.in_channels, self.resolution, self.resolution)
+        if x.ndim != 4 or tuple(x.shape[1:]) != expected:
+            raise ValueError(
+                f"Expected [B, {expected[0]}, {expected[1]}, {expected[2]}], "
+                f"got {tuple(x.shape)}."
+            )
+
+        y = self.conv(x, w)
+
+        # Optional noise
+        if self.use_noise and noise_mode != "none":
+            if noise_mode == "random":
+                noise = torch.randn(
+                    y.shape[0],
+                    1,
+                    self.resolution,
+                    self.resolution,
+                    device=y.device,
+                    dtype=y.dtype,
+                )
+            else:
+                noise = self.noise_const.to(dtype=y.dtype)
+
+            y = y + self.noise_strength * noise
+
+        y = y + self.bias.reshape(1, -1, 1, 1)
+        y = F.leaky_relu(y, negative_slope=self.negative_slope)
+        return y * self.activation_gain
+
+
+# Project features into image channels without demodulation.
+class ToImage(nn.Module):
+    def __init__(self, in_channels, w_dim=512, image_channels=1):
+        super().__init__()
+        self.conv = ModulatedConv2d(
+            in_channels=in_channels,
+            out_channels=image_channels,
+            w_dim=w_dim,
+            kernel_size=1,
+            demodulate=False,
+        )
+        self.bias = nn.Parameter(torch.zeros(image_channels))
+
+    def forward(self, x, w):
+        image = self.conv(x, w)
+        image = image + self.bias.reshape(1, -1, 1, 1)
+        return image
