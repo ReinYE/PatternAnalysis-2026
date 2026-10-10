@@ -473,8 +473,13 @@ def make_resample_filter():
 
 
 class FilteredUpsample2d(nn.Module):
-    def __init__(self):
+    def __init__(self, extra_padding=0):
         super().__init__()
+
+        if not isinstance(extra_padding, int) or extra_padding < 0:
+            raise ValueError("extra_padding must be a nonnegative integer.")
+
+        self.extra_padding = extra_padding
 
         self.register_buffer("filter", make_resample_filter())
 
@@ -488,7 +493,15 @@ class FilteredUpsample2d(nn.Module):
 
         kernel = kernel.repeat(channels, 1, 1, 1)
 
-        return F.conv_transpose2d(x, kernel, stride=2, padding=1, groups=channels)
+        y = F.conv_transpose2d(x, kernel, stride=2, padding=0, groups=channels)
+
+        if self.extra_padding == 0:
+            return y[..., 1:-1, 1:-1]
+        if self.extra_padding > 1:
+            border = self.extra_padding - 1
+            y = F.pad(y, (border, border, border, border))
+
+        return y
 
 
 class FilteredDownsample2d(nn.Module):
@@ -521,6 +534,7 @@ class ModulatedConv2d(nn.Module):
         w_dim=512,
         kernel_size=3,
         *,
+        up=1,
         demodulate=True,
         eps=1e-8,
     ):
@@ -531,6 +545,9 @@ class ModulatedConv2d(nn.Module):
         if kernel_size % 2 == 0:
             raise ValueError("Use an odd kernel_size.")
 
+        if up not in (1, 2):
+            raise ValueError("up must be 1 or 2.")
+
         if eps <= 0:
             raise ValueError("eps must be positive.")
 
@@ -539,6 +556,12 @@ class ModulatedConv2d(nn.Module):
         self.w_dim = w_dim
         self.kernel_size = kernel_size
         self.padding = kernel_size // 2
+        self.up = up
+        if up == 2:
+            self.upsample = FilteredUpsample2d(extra_padding=self.padding)
+        else:
+            self.upsample = nn.Identity()
+
         self.demodulate = demodulate
         self.eps = eps
 
@@ -559,7 +582,7 @@ class ModulatedConv2d(nn.Module):
                 f"Expected [B, {self.in_channels}, H, W], " f"got {tuple(x.shape)}."
             )
 
-        batch_size, _, height, width = x.shape
+        batch_size = x.shape[0]
 
         if batch_size == 0:
             raise ValueError("Batch must not be empty.")
@@ -584,7 +607,16 @@ class ModulatedConv2d(nn.Module):
         else:
             sample_weight = sample_weight * self.weight_gain
 
-        grouped_input = x.reshape(1, batch_size * self.in_channels, height, width)
+        if self.up == 2:
+            x = self.upsample(x)
+            conv_padding = 0
+        else:
+            conv_padding = self.padding
+
+        grouped_input = x.reshape(
+            1, batch_size * self.in_channels, x.shape[-2], x.shape[-1]
+        )
+
         grouped_weight = sample_weight.reshape(
             batch_size * self.out_channels,
             self.in_channels,
@@ -593,10 +625,10 @@ class ModulatedConv2d(nn.Module):
         )
 
         y = F.conv2d(
-            grouped_input, grouped_weight, padding=self.padding, groups=batch_size
+            grouped_input, grouped_weight, padding=conv_padding, groups=batch_size
         )
 
-        return y.reshape(batch_size, self.out_channels, height, width)
+        return y.reshape(batch_size, self.out_channels, y.shape[-2], y.shape[-1])
 
 
 # Style convolution, optional noise, bias, and activation.
@@ -609,16 +641,24 @@ class StyleConv(nn.Module):
         w_dim=512,
         kernel_size=3,
         *,
+        up=1,
         use_noise=True,
     ):
         super().__init__()
 
         if resolution < 1:
             raise ValueError("resolution must be positive.")
+        if up not in (1, 2):
+            raise ValueError("up must be 1 or 2.")
+
+        if resolution % up != 0:
+            raise ValueError("resolution must be divisible by up.")
 
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.resolution = resolution
+        self.up = up
+        self.input_resolution = resolution // up
         self.use_noise = use_noise
 
         self.negative_slope = 0.2
@@ -630,6 +670,7 @@ class StyleConv(nn.Module):
             w_dim=w_dim,
             kernel_size=kernel_size,
             demodulate=True,
+            up=up,
         )
 
         self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -648,7 +689,7 @@ class StyleConv(nn.Module):
         if noise_mode not in ("random", "const", "none"):
             raise ValueError("noise_mode must be 'random', 'const', or 'none'.")
 
-        expected = (self.in_channels, self.resolution, self.resolution)
+        expected = (self.in_channels, self.input_resolution, self.input_resolution)
         if x.ndim != 4 or tuple(x.shape[1:]) != expected:
             raise ValueError(
                 f"Expected [B, {expected[0]}, {expected[1]}, {expected[2]}], "
@@ -695,3 +736,114 @@ class ToImage(nn.Module):
         image = self.conv(x, w)
         image = image + self.bias.reshape(1, -1, 1, 1)
         return image
+
+
+class SynthesisBlock(nn.Module):
+    def __init__(
+        self, in_channels, out_channels, resolution, w_dim=512, image_channels=1
+    ):
+        super().__init__()
+        if in_channels < 0 or min(out_channels, w_dim, image_channels) < 1:
+            raise ValueError("Invalid channel count or w_dim.")
+
+        if resolution < 4 or resolution & (resolution - 1):
+            raise ValueError("resolution must be a power of two " "and at least 4.")
+
+        self.is_first = resolution == 4
+        if (in_channels == 0) != self.is_first:
+            raise ValueError("in_channels must be 0 only for the 4x4 block.")
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.resolution = resolution
+        self.w_dim = w_dim
+        self.image_channels = image_channels
+
+        self.num_conv = 1 if self.is_first else 2
+        self.num_toimage = 1
+
+        self.num_ws = self.num_conv + self.num_toimage
+
+        if self.is_first:
+            self.const = nn.Parameter(torch.randn(1, out_channels, 4, 4))
+            self.conv_up = None
+            self.image_upsample = None
+        else:
+            self.register_parameter("const", None)
+
+            self.conv_up = StyleConv(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                resolution=resolution,
+                w_dim=w_dim,
+                up=2,
+            )
+            self.image_upsample = FilteredUpsample2d(extra_padding=0)
+
+        self.conv = StyleConv(
+            in_channels=out_channels,
+            out_channels=out_channels,
+            resolution=resolution,
+            w_dim=w_dim,
+            up=1,
+        )
+
+        self.to_image = ToImage(
+            in_channels=out_channels, w_dim=w_dim, image_channels=image_channels
+        )
+
+    def forward(self, x, image, ws, *, noise_mode="random"):
+        if (
+            ws.ndim != 3
+            or tuple(ws.shape[1:]) != (self.num_ws, self.w_dim)
+            or ws.shape[0] == 0
+        ):
+            raise ValueError(
+                f"Expected nonempty ws [B, {self.num_ws}, {self.w_dim}], "
+                f"got {tuple(ws.shape)}."
+            )
+
+        batch_size = ws.shape[0]
+
+        if self.is_first:
+            if x is not None or image is not None:
+                raise ValueError("The first block expects x=None and image=None.")
+
+            x = self.const.expand(batch_size, -1, -1, -1)
+        else:
+            if x is None or image is None:
+                raise ValueError("A later block requires both x and image.")
+
+            previous_resolution = self.resolution // 2
+
+            expected_x = (
+                batch_size,
+                self.in_channels,
+                previous_resolution,
+                previous_resolution,
+            )
+            expected_image = (
+                batch_size,
+                self.image_channels,
+                previous_resolution,
+                previous_resolution,
+            )
+            if tuple(x.shape) != expected_x:
+                raise ValueError(f"Expected x {expected_x}, got {tuple(x.shape)}.")
+
+            if tuple(image.shape) != expected_image:
+                raise ValueError(
+                    f"Expected image {expected_image}, got {tuple(image.shape)}."
+                )
+
+            x = self.conv_up(x, ws[:, 0, :], noise_mode=noise_mode)
+
+        x = self.conv(x, ws[:, self.num_conv - 1, :], noise_mode=noise_mode)
+        image_delta = self.to_image(x, ws[:, self.num_conv, :])
+
+        if self.is_first:
+            image = image_delta
+        else:
+            image = self.image_upsample(image) + image_delta
+
+        return x, image
