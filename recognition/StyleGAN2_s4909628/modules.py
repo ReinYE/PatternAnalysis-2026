@@ -847,3 +847,147 @@ class SynthesisBlock(nn.Module):
             image = self.image_upsample(image) + image_delta
 
         return x, image
+
+
+class SynthesisNetwork(nn.Module):
+    def __init__(
+        self,
+        w_dim=512,
+        image_resolution=256,
+        image_channels=1,
+        channel_base=16384,
+        channel_max=512,
+    ):
+        super().__init__()
+        if image_resolution < 4 or image_resolution & (image_resolution - 1):
+            raise ValueError(
+                "image_resolution must be a power of two " "and at least 4."
+            )
+
+        if min(w_dim, image_channels, channel_base, channel_max) < 1:
+            raise ValueError("Dimensions and channel settings must be positive.")
+
+        if channel_base < image_resolution:
+            raise ValueError("channel_base must be at least image_resolution.")
+
+        self.w_dim = w_dim
+        self.image_resolution = image_resolution
+        self.image_channels = image_channels
+        self.channel_base = channel_base
+        self.channel_max = channel_max
+
+        # all synthesis resolutions
+        self.block_resolutions = []
+        resolution = 4
+        while resolution <= image_resolution:
+            self.block_resolutions.append(resolution)
+            resolution *= 2
+        # output channels at each resolution
+        self.channels = {
+            resolution: min(channel_base // resolution, channel_max)
+            for resolution in self.block_resolutions
+        }
+        # blocks in increasing resolution order.
+        self.blocks = nn.ModuleList()
+        previous_channels = 0
+        for resolution in self.block_resolutions:
+            out_channels = self.channels[resolution]
+            block = SynthesisBlock(
+                in_channels=previous_channels,
+                out_channels=out_channels,
+                resolution=resolution,
+                w_dim=w_dim,
+                image_channels=image_channels,
+            )
+
+            self.blocks.append(block)
+            previous_channels = out_channels
+
+        # Adjacent blocks share one style slot.
+        # --> previous ToIamge shares one style slot with current Conv Up
+        self.num_ws = (
+            sum(block.num_conv for block in self.blocks) + self.blocks[-1].num_toimage
+        )
+
+    def forward(self, ws, *, noise_mode="random"):
+        if (
+            ws.ndim != 3
+            or tuple(ws.shape[1:]) != (self.num_ws, self.w_dim)
+            or ws.shape[0] == 0
+        ):
+            raise ValueError(
+                f"Expected nonempty ws [B, {self.num_ws}, {self.w_dim}], "
+                f"got {tuple(ws.shape)}."
+            )
+        x = None
+        image = None
+        style_index = 0
+
+        for block in self.blocks:
+            block_ws = ws[:, style_index : style_index + block.num_ws, :]
+            x, image = block(x, image, block_ws, noise_mode=noise_mode)
+
+            style_index += block.num_conv
+
+        return image
+
+
+class StyleGAN2Generator(nn.Module):
+    def __init__(
+        self,
+        z_dim=512,
+        w_dim=512,
+        image_resolution=256,
+        image_channels=1,
+        *,
+        channel_base=16384,
+        channel_max=512,
+        mapping_layers=8,
+        mapping_lr_multiplier=0.01,
+        w_avg_beta=0.995,
+    ):
+        super().__init__()
+
+        if z_dim < 1:
+            raise ValueError("z_dim must be positive.")
+
+        self.z_dim = z_dim
+        self.w_dim = w_dim
+        self.image_resolution = image_resolution
+        self.image_channels = image_channels
+
+        # determines how many style slots are needed
+        self.synthesis = SynthesisNetwork(
+            w_dim=w_dim,
+            image_resolution=image_resolution,
+            image_channels=image_channels,
+            channel_base=channel_base,
+            channel_max=channel_max,
+        )
+
+        self.num_ws = self.synthesis.num_ws
+
+        self.mapping = MappingNetwork(
+            num_ws=self.num_ws,
+            z_dim=z_dim,
+            w_dim=w_dim,
+            num_layers=mapping_layers,
+            lr_multiplier=mapping_lr_multiplier,
+            w_avg_beta=w_avg_beta,
+        )
+
+    def forward(
+        self,
+        z,
+        *,
+        noise_mode="random",
+        update_w_avg=True,
+    ):
+        if noise_mode not in ("random", "const", "none"):
+            raise ValueError("noise_mode must be 'random', 'const', or 'none'.")
+        
+        ws = self.mapping(z, update_w_avg=update_w_avg)
+
+        image = self.synthesis(ws, noise_mode=noise_mode)
+
+        return image
