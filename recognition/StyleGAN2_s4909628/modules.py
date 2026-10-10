@@ -504,28 +504,6 @@ class FilteredUpsample2d(nn.Module):
         return y
 
 
-class FilteredDownsample2d(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.register_buffer("filter", make_resample_filter())
-
-    def forward(self, x):
-        if x.ndim != 4:
-            raise ValueError("Expected [B, C, H, W].")
-
-        if x.shape[-2] % 2 or x.shape[-1] % 2:
-            raise ValueError("Height and width must be even.")
-
-        channels = x.shape[1]
-
-        kernel = self.filter.to(dtype=x.dtype)
-
-        kernel = kernel.repeat(channels, 1, 1, 1)
-
-        return F.conv2d(x, kernel, stride=2, padding=1, groups=channels)
-
-
 class ModulatedConv2d(nn.Module):
     def __init__(
         self,
@@ -985,9 +963,215 @@ class StyleGAN2Generator(nn.Module):
     ):
         if noise_mode not in ("random", "const", "none"):
             raise ValueError("noise_mode must be 'random', 'const', or 'none'.")
-        
+
         ws = self.mapping(z, update_w_avg=update_w_avg)
 
         image = self.synthesis(ws, noise_mode=noise_mode)
 
         return image
+
+
+class EqualizedDownsampleConv2d(EqualizedConv2d):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=3,
+        *,
+        bias=True,
+        activation="linear",
+    ):
+        super().__init__(
+            in_channels, out_channels, kernel_size, bias=bias, activation=activation
+        )
+
+        self.register_buffer("filter", make_resample_filter())
+
+    def forward(self, x):
+        if x.ndim != 4 or x.shape[1] != self.in_channels:
+            raise ValueError(f"Expected [B, {self.in_channels}, H, W].")
+
+        if x.shape[0] == 0 or min(x.shape[-2:]) < 2:
+            raise ValueError("Expected a nonempty batch and spatial size >= 2.")
+
+        if x.shape[-2] % 2 or x.shape[-1] % 2:
+            raise ValueError("Height and width must be even.")
+
+        kernel = self.filter.to(dtype=x.dtype).repeat(self.in_channels, 1, 1, 1)
+
+        x = F.conv2d(x, kernel, padding=self.padding + 1, groups=self.in_channels)
+
+        y = F.conv2d(x, self.weight * self.weight_gain, self.bias, stride=2, padding=0)
+
+        if self.activation == "lrelu":
+            y = F.leaky_relu(y, negative_slope=0.2)
+            y = y * math.sqrt(2.0 / (1.0 + 0.2**2))
+
+        return y
+
+
+class DiscriminatorBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, resolution):
+        super().__init__()
+
+        if min(in_channels, out_channels) < 1:
+            raise ValueError("Channels must be positive.")
+
+        if resolution < 8 or resolution & (resolution - 1):
+            raise ValueError("resolution must be a power of two >= 8.")
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.resolution = resolution
+
+        self.conv = EqualizedConv2d(
+            in_channels, in_channels, kernel_size=3, activation="lrelu"
+        )
+
+        self.conv_down = EqualizedDownsampleConv2d(
+            in_channels, out_channels, kernel_size=3, activation="lrelu"
+        )
+
+        self.skip_down = EqualizedDownsampleConv2d(
+            in_channels, out_channels, kernel_size=1, bias=False, activation="linear"
+        )
+
+    def forward(self, x):
+        expected = (self.in_channels, self.resolution, self.resolution)
+        if x.ndim != 4 or tuple(x.shape[1:]) != expected:
+            raise ValueError(
+                f"Expected [B, {expected[0]}, {expected[1]}, {expected[2]}]."
+            )
+
+        main = self.conv_down(self.conv(x))
+        skip = self.skip_down(x)
+
+        return (main + skip) * math.sqrt(0.5)
+
+
+class MinibatchStdDev(nn.Module):
+    def __init__(self, group_size=4, eps=1e-8):
+        super().__init__()
+
+        if not isinstance(group_size, int) or group_size < 1:
+            raise ValueError("group_size must be a positive integer.")
+
+        if eps <= 0:
+            raise ValueError("eps must be positive.")
+
+        self.group_size = group_size
+        self.eps = eps
+
+    def forward(self, x):
+        if x.ndim != 4 or min(x.shape) < 1:
+            raise ValueError("Expected nonempty [B, C, H, W].")
+
+        batch_size, channels, height, width = x.shape
+
+        group_size = min(self.group_size, batch_size)
+
+        while batch_size % group_size != 0:
+            group_size -= 1
+
+        grouped = x.reshape(
+            batch_size // group_size, group_size, channels, height, width
+        )
+
+        centered = grouped - grouped.mean(dim=1, keepdim=True)
+        std = torch.sqrt(centered.square().mean(dim=1) + self.eps)
+
+        statistic = std.mean(dim=(1, 2, 3), keepdim=True)
+
+        statistic = statistic.repeat_interleave(group_size, dim=0)
+
+        statistic = statistic.expand(batch_size, 1, height, width)
+
+        return torch.cat([x, statistic], dim=1)
+
+
+class StyleGAN2Discriminator(nn.Module):
+    def __init__(
+        self,
+        image_resolution=256,
+        image_channels=1,
+        *,
+        channel_base=16384,
+        channel_max=512,
+        mbstd_group_size=4,
+    ):
+        super().__init__()
+
+        if image_resolution < 4 or image_resolution & (image_resolution - 1):
+            raise ValueError("image_resolution must be a power of two >= 4.")
+
+        if min(image_channels, channel_base, channel_max) < 1:
+            raise ValueError("Channels and channel settings must be positive.")
+
+        if channel_base < image_resolution:
+            raise ValueError("channel_base must be at least image_resolution.")
+
+        self.image_resolution = image_resolution
+        self.image_channels = image_channels
+        self.channel_base = channel_base
+        self.channel_max = channel_max
+
+        self.block_resolutions = []
+        resolution = image_resolution
+
+        while resolution > 4:
+            self.block_resolutions.append(resolution)
+            resolution //= 2
+
+        self.channels = {
+            resolution: min(channel_base // resolution, channel_max)
+            for resolution in self.block_resolutions + [4]
+        }
+
+        # Convert the input image into feature channels.
+        self.from_image = EqualizedConv2d(
+            image_channels,
+            self.channels[image_resolution],
+            kernel_size=1,
+            activation="lrelu",
+        )
+
+        self.blocks = nn.ModuleList(
+            [
+                DiscriminatorBlock(
+                    in_channels=self.channels[r],
+                    out_channels=self.channels[r // 2],
+                    resolution=r,
+                )
+                for r in self.block_resolutions
+            ]
+        )
+
+        self.mbstd = MinibatchStdDev(group_size=mbstd_group_size)
+
+        final_channels = self.channels[4]
+
+        self.final_conv = EqualizedConv2d(
+            final_channels + 1, final_channels, kernel_size=3, activation="lrelu"
+        )
+        self.final_dense = EqualizedLinear(
+            final_channels * 4 * 4, final_channels, activation="lrelu"
+        )
+        self.out = EqualizedLinear(final_channels, 1, activation="linear")
+
+    def forward(self, image):
+        expected = (self.image_channels, self.image_resolution, self.image_resolution)
+
+        if image.ndim != 4 or tuple(image.shape[1:]) != expected or image.shape[0] == 0:
+            raise ValueError(
+                f"Expected nonempty [B, {expected[0]}, {expected[1]}, {expected[2]}]."
+            )
+
+        x = self.from_image(image)
+        for block in self.blocks:
+            x = block(x)
+
+        x = self.mbstd(x)
+        x = self.final_conv(x)
+        x = self.final_dense(x.flatten(1))
+
+        return self.out(x)
