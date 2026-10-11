@@ -1049,7 +1049,7 @@ class DiscriminatorBlock(nn.Module):
         return (main + skip) * math.sqrt(0.5)
 
 
-class MinibatchStdDev(nn.Module):
+class StyleGAN2MinibatchStdDev(nn.Module):
     def __init__(self, group_size=4, eps=1e-8):
         super().__init__()
 
@@ -1146,7 +1146,7 @@ class StyleGAN2Discriminator(nn.Module):
             ]
         )
 
-        self.mbstd = MinibatchStdDev(group_size=mbstd_group_size)
+        self.mbstd = StyleGAN2MinibatchStdDev(group_size=mbstd_group_size)
 
         final_channels = self.channels[4]
 

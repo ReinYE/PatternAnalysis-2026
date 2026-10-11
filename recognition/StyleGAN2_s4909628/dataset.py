@@ -458,7 +458,15 @@ def build_dataloaders(
     pin_memory=False,
     loader_seed=42,
     drop_last_train=True,
+    persistent_workers=None,
 ):
+    # Preserve the previous default for existing callers. StyleGAN2 can disable
+    # persistence to reproduce worker-seed consumption when resuming an epoch.
+    if persistent_workers is None:
+        persistent_workers = num_workers > 0
+    if persistent_workers and num_workers == 0:
+        raise ValueError("persistent_workers requires num_workers > 0.")
+
     splits = create_or_load_splits(
         data_root=data_root,
         metadata_path=metadata_path,
@@ -496,7 +504,7 @@ def build_dataloaders(
         generator=train_generator,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        persistent_workers=num_workers > 0,
+        persistent_workers=persistent_workers,
         drop_last=drop_last_train,
     )
     test_loader = DataLoader(
@@ -504,14 +512,14 @@ def build_dataloaders(
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        persistent_workers=num_workers > 0,
+        persistent_workers=persistent_workers,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        persistent_workers=num_workers > 0,
+        persistent_workers=persistent_workers,
     )
 
     return (
