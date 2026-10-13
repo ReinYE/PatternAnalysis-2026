@@ -13,6 +13,55 @@ The proposed model is evaluated against a simpler baseline generative model usin
 
 ## 2. Feasibility Review
 
+### 1. User Need, Scope and Acceptance Criteria
+
+The intended users of this prototype are medical-imaging and machine-learning researchers 
+who require additional brain MRI data for model development but face limited clinical scan 
+availability and patient privacy.
+
+This project is to investigate whether StyleGAN2 can  produce genuinely novel, diverse, and anatomically
+coherent scans without simply memorising training patients. 
+
+A DCGAN is used as a simpler baseline to determine whether the additional architectural 
+and computational complexity of StyleGAN2 provides a meaningful engineering advantage.
+
+The prototype will be evaluated against the following criteria:
+
+1. The generated cohort should achieve approximately SSIM > 0.6 against appropriate reference anatomical images.
+2. StyleGAN2 should provide measurable improvement over the DCGAN baseline in structural fidelity and distribution fidelity.
+3. Generated samples and real-versus-synthetic embedding analysis should not show obvious mode collapse or severely restricted diversity.
+4. Nearest-neighbour analysis should not reveal obvious near-duplicate training images that would indicate potential emorisation.
+5. Training must remain feasible on the NVIDIA A100 40 GB GPU, with peak VRAM usage and training/generation runtime explicitly profiled.
+
+### 2. Model Choice and Course Concepts
+
+The project uses the ADNI brain MRI dataset and a StyleGAN2 generator as the proposed Hard-Difficulty model. A DCGAN trained using the same preprocessing workflow is used as the baseline.
+
+StyleGAN2 was selected because its mapping network, intermediate latent space, learned affine style transformations, style-modulated convolutions and weight demodulation provide substantially greater control over image synthesis than a standard DCGAN. These components directly relate to generate high-quality and diverse new MRI samples, thus potentially reducing the need for directly sharing real patient scans.
+
+Compared with the original StyleGAN, StyleGAN2 improves the synthesis architecture to reduce characteristic image artefacts and improve image fidelity. This is particularly relevant to brain MRI generation, where fine anatomical structures and tissue boundaries must be preserved to produce clinically plausible synthetic images.
+
+### 3. Preliminary Feasibility Evidence
+
+An initial audit of the ADNI dataset will document the number of patients, usable slices, original image dimensions, preprocessing resolution and normalisation strategy. The evaluation set will be split off from the training set by patient. The DCGAN baseline is trained with the preprocessed ADNI data to establish initial quality and resource benchmarks. And StyleGAN2 will be trained using the same preprocessed datasets.
+
+An initial StyleGAN2 smoke test has successfully run on an NVIDIA A100-PCIE-40GB GPU in the cluster rangpur. At batch size 8, the first training epoch processed approximately 17.48 kimg and required 1191 s. Peak allocated GPU memory was 36.24 GiB and peak reserved memory was 36.46 GiB. The first epoch incurred additional GPU memory overhead from CUDA/cuDNN initialization and warm-up. Once the convolution algorithms and memory buffers had been initialised, subsequent epochs stabilised at below approximately 7 GiB of reserved VRAM.
+
+These results indicate that the current model configuration fits within the available 40 GB GPU memory, although training cost is significant.
+
+### 4. Risks, Compute Budget and Fallback
+
+The main technical risks are adversarial training instability, mode collapse, memorisation of individual ADNI training scans, anatomically implausible generated structures, and imbalance between the generator and discriminator of StyleGAN2.
+
+Also, the current measured training cost is approximately 20 minutes per epoch on rangpur with a-100. Longer training runs will therefore be guided by intermediate sample quality and training stability. Early stopping can be used to reduce the overfitting.
+
+The DCGAN baseline under will be trained on the preprocessed datasets and compared initial sample quality, SSIM/FID, runtime and GPU memory against StyleGAN2.
+
+Training will initially use established StyleGAN2 hyperparameter settings. If overfitting, unstable convergence, or insufficient improvements over the DCGAN baseline are observed, targeted hyperparameter adjustments will be made based on the identified issues, including learning rates, regularisation settings, and data augmentation strategies.
+
+If these adjustments are insufficient, a reduced StyleGAN2 configuration, such as lower image resolution or fewer feature channels, will be considered to reduce computational requirements while retaining the core architecture.
+
+If the model still fails to converge or produces anatomically implausible images, the best available checkpoint will be retained and evaluated against the DCGAN baseline. Representative failure cases will be documented and analysed to identify possible causes and limitations. The final report will transparently discuss unsuccessful experiments and whether StyleGAN2's additional complexity is justified by its observed performance.
 
 ## 3. Dataset
 
@@ -175,3 +224,17 @@ Generative AI tools were used during the development of this project.
 
 
 ## 20. Referneces
+
+[1] A. Radford, L. Metz, and S. Chintala, "Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks," *ICLR*, 2016. [Paper](https://arxiv.org/abs/1511.06434)
+
+[2] T. Karras, S. Laine, and T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," *CVPR*, 2019. [Paper](https://arxiv.org/abs/1812.04948)
+
+[3] T. Karras et al., "Analyzing and Improving the Image Quality of StyleGAN," *CVPR*, 2020. [Paper](https://arxiv.org/abs/1912.04958)
+
+[4] NVIDIA Research (NVlabs), "StyleGAN2-ADA — Official PyTorch Implementation," GitHub Repository. [Online]. [Source Code](https://github.com/NVlabs/stylegan2-ada-pytorch)
+
+[5] Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, 2004. [Paper](https://doi.org/10.1109/TIP.2003.819861)
+
+[6] M. Heusel et al., "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS*, 2017. [Paper](https://arxiv.org/abs/1706.08500)
+
+[7] T. Karras et al., "Training Generative Adversarial Networks with Limited Data," *NeurIPS*, 2020. [Paper](https://arxiv.org/abs/2006.06676)
