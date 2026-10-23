@@ -151,10 +151,10 @@ s_{\ell}=A_{\ell}(w).
 $$
 
 <p align="center">
-<img src="images/stylegan_architecture.png" alt="StyleGAN mapping and synthesis networks" width="70%">
+<img src="images/chapter4/stylegan_architecture.png" width="70%">
 <br>
 <em>
-Figure 1. Mapping and synthesis networks of the original StyleGAN. From Karras et al. [3], Fig. 1(b). 
+Figure 1. Mapping and synthesis networks of the original StyleGAN. From Karras et al. [2], Fig. 1(b). 
 <strong>A</strong> denotes a learned affine transformation, while <strong>B</strong> applies 
 learned scaling to the noise input. AdaIN belongs to the original StyleGAN design and is replaced 
 by weight modulation and demodulation in the StyleGAN2 implementation.
@@ -175,16 +175,16 @@ the convolutions, as described below.
 ### 4.3 Weight Modulation and Demodulation
 
 In the original architecture shown in Figure 1, adaptive instance normalisation (AdaIN) normalises 
-feature maps before applying style-dependent scaling and offsets. Karras et al. [4] link this 
+feature maps before applying style-dependent scaling and offsets. Karras et al. [3] link this 
 operation to characteristic droplet-like artefacts, as it can remove information carried by 
 relative feature magnitudes. StyleGAN2 replaces explicit feature-map instance normalisation with 
 weight modulation and demodulation.
 
 <p align="center">
-<img src="images/stylegan2_weight_demodulation.png" alt="StyleGAN mapping and synthesis networks" width="100%">
+<img src="images/chapter4/stylegan2_weight_demodulation.png" width="100%">
 <br>
 <em>
-Figure 2. Redesign of the StyleGAN synthesis layer. From Karras et al. [4], Fig. 2. 
+Figure 2. Redesign of the StyleGAN synthesis layer. From Karras et al. [3], Fig. 2. 
 Panel (b) expands the original AdaIN operation, panel (c) reorganises the style block, 
 and panel (d) replaces explicit feature normalisation with weight modulation and demodulation. 
 Panel (a) provides the original synthesis-layer overview, whose mapping and noise pathways are shown more fully in Figure 1.
@@ -213,7 +213,7 @@ $$
 Here, $s_i$ is the sample-specific style coefficient for input channel $i$, $o$ indexes output 
 channels, and $(u,v)$ indexes kernel positions. Modulation adjusts each input channel's 
 contribution, while demodulation compensates for the resulting output scale under the unit-variance 
-input assumption [4]. This operates on weights rather than measured feature-map statistics.
+input assumption. This operates on weights rather than measured feature-map statistics.
 
 For MRI synthesis, reducing architecture-induced artefacts is relevant because artificial patterns 
 can obscure or resemble structural detail. This provides a theoretical motivation for the mechanism, 
@@ -311,161 +311,483 @@ and evaluated against DCGAN as a complete system, without component-wise ablatio
 
 ### 5.1 Project Structure
 
+The project is implemented in Python using PyTorch. Network definitions, data loading, training, 
+inference and evaluation are separated into modules:
+
 ```text
-recognition/
-└── StyleGAN2_s4909628/
-    ├── modules.py
-    ├── dataset.py
-    ├── train.py
-    ├── predict.py
-    └── README.md
+StyleGAN2_s4909628/
+├── modules.py
+├── dataset.py
+├── train.py
+├── predict.py
+├── eval*.py
+├── export*.py
+├── audit_memorization.py
+├── splits/
+├── runs/
+├── evaluation/
+└── README.md
 ```
 
 
+| Component | Responsibility |
+|---|---|
+| `modules.py` | Defines the DCGAN and StyleGAN2 networks and reusable network components. |
+| `dataset.py` | Associates slices with patients, manages fixed partitions, and provides image datasets and data loaders. |
+| `train.py` | Contains training and validation routines, configuration handling, checkpointing and resource measurements. The current main entry point runs StyleGAN2. |
+| `predict.py` | Reconstructs generators from checkpoint configurations and produces sample grids, selecting EMA weights for StyleGAN2 when available. |
+| `eval*.py`, `export*.py`, `audit_memorization.py` | Export fixed evaluation cohorts, compute metrics and visualisations, and perform training-set memorisation analysis. |
+| `splits/`, `runs/`, `evaluation/` | Store dataset manifests, training outputs and evaluation artefacts, respectively. |
+
+### 5.2 Implementation and Experiment Management
+
+StyleGAN2 is implemented using standard PyTorch operations, with grouped convolutions for per-sample 
+weight modulation and automatic differentiation for R1 and path length regularisation. The official 
+NVIDIA implementation was consulted as a reference [8].
+
+Each run stores its configuration, training history and checkpoints. Checkpoints preserve model and 
+EMA weights, optimiser and regularisation states, training progress and random-number states, 
+enabling resumption at epoch boundaries. Dataset manifest hashes and evaluation metadata link the 
+reported results to their data and model configurations.
+
 ## 6. Experimental Setup
 
+Experiments were conducted on the Rangpur cluster using an NVIDIA A100 40 GB GPU. 
+Both models used the dataset partitions and preprocessing described in Section 3 and were trained 
+for 100 epochs with random seed 42. StyleGAN2 used FP32 tensors with TF32 and cuDNN benchmarking enabled; 
+automatic mixed precision was disabled.
 
-## 7. Quantitative Evaluation
+| Setting | DCGAN | StyleGAN2 |
+|---|---|---|
+| Training epochs | 100 | 100 |
+| Batch size | 16 | 64 |
+| Latent dimension | 128 | 512 |
+| Mapping network | — | $W$ dimension 512; 8 layers  |
+| Optimiser | Adam | Adam |
+| Base learning rate (G / D) | 2e-4 / 2e-4 | 2e-3 / 2e-3 |
+| Base Adam betas | (0.5, 0.999) | (0, 0.99) |
+| R1 regularisation | — | Weight 10; every 16 batches |
+| Path length regularisation | — | Weight 2; every 4 batches; half-batch |
+| Style mixing probability | — | 0.9 |
+| Generator EMA | — | 10 kimg target half-life; ramp-up 0.05 |
+| Generated evaluation images | 5,000 | 5,000 |
+| Real reference images | Same 5,000 test slices | Same 5,000 test slices |
+
+StyleGAN2 optimiser values include lazy-regularisation adjustments. The shared real reference cohort 
+was sampled without replacement, preserving the test set’s AD/NC proportions.
+
+## 7. Image Quality and Fidelity
+
+### 7.1 Generated Sample Comparison
+
+The following grids show the first 16 images from each exported evaluation cohort in sample-ID order, 
+without selection by visual quality.
+
+<p align="center">
+<img src="evaluation/cohort_final_674672/dcgan/previews/group_01.png" width="50%">
+<br>
+<em>
+DCGAN samples from the final evaluation cohort.
+</em>
+</p>
 
 
-## 8. Baseline vs Proposed Model
+<p align="center">
+<img src="evaluation/cohort_final_674672/stylegan2/previews/group_01.png" width="50%">
+<br>
+<em>
+StyleGAN2 samples from the final evaluation cohort.
+</em>
+</p>
 
-### 8.1 Quantitative Comparison
+Both models produce recognisable brain-slice outlines. Visually, DCGAN samples frequently contain coarse, 
+grainy textures and poorly resolved internal structures; StyleGAN2 generally produces more coherent 
+contours and internal tissue patterns, although some samples retain uneven contrast, local blurring 
+and background artefacts. These visual observations are examined quantitatively below.
 
-| Metric | DCGAN Baseline | StyleGAN2 |
+### 7.2 Distributional Fidelity: FID
+
+FID was calculated from 2,048-dimensional features extracted using the same frozen Inception network 
+for all cohorts. Lower values indicate closer agreement between the feature distributions.
+
+| Model | FID ↓ |
+|---|---:|
+| DCGAN | 93.536 |
+| StyleGAN2 | **7.506** |
+
+StyleGAN2 achieves a substantially lower FID, supporting better agreement with the real reference 
+distribution under this feature representation. The real-versus-itself check returned approximately 
+zero, providing a numerical consistency check. However, FID does not directly establish anatomical 
+correctness or clinical usefulness.
+
+### 7.3 Reference-Paired SSIM
+
+Each generated image was paired with its nearest real reference image by Euclidean distance in the 
+original Inception feature space. SSIM was then computed over the full images without registration. 
+Each generated image was paired with its nearest real reference in feature space. Multiple generated 
+images could share the same reference. These references were selected for similarity assessment and 
+were not matched ground-truth images.
+
+| Model | Mean SSIM ± SD | Median | SSIM > 0.6 |
+|---|---:|---:|---:|
+| DCGAN | 0.6731 ± 0.0407 | 0.6774 | 95.46% |
+| StyleGAN2 | 0.6747 ± 0.0355 | 0.6765 | 97.74% |
+
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_b/ssim/figures/ssim_distribution.png" width="80%">
+<br>
+<em>
+SSIM distributions for generated images paired with their nearest real references in Inception feature space.
+</em>
+</p>
+
+The mean scores differ by only 0.0016, while StyleGAN2 has a slightly lower median. 
+Reference-paired SSIM therefore provides little separation between the models despite their large 
+FID difference. Shared background and similar outlines can contribute to high scores, 
+whereas differences in slice geometry and positioning can reduce similarity. 
+The proportion above 0.6 is descriptive and should not be interpreted as generation accuracy.
+
+### 7.4 Sharpness: Laplacian and Tenengrad
+
+Sharpness was assessed using Laplacian variance and Tenengrad gradient energy [9]. 
+Both were measured over the full image and within an intensity-derived foreground region eroded by 
+three pixels to reduce background and outer-boundary effects.
+
+A preliminary blur-and-noise experiment confirmed that both measures respond to noise as well as 
+image detail; higher scores therefore do not necessarily indicate better image quality.
+
+| Cohort | Median Laplacian variance, interior | Median Tenengrad, interior |
 |---|---:|---:|
-| SSIM | TODO | TODO |
-| FID | TODO | TODO |
-| Diversity Metric | TODO | TODO |
-| Parameter Count | TODO | TODO |
-| Peak GPU VRAM | TODO | TODO |
-| Training Time | TODO | TODO |
-| Generation Time per Image | TODO | TODO |
+| Real | 0.05122 | 0.00848 |
+| DCGAN | 0.05648 | 0.00920 |
+| StyleGAN2 | 0.04928 | 0.00881 |
 
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_b/sharpness/sharpness_distributions.png" width="80%">
+<br>
+<em>
+Empirical cumulative distributions of Laplacian variance and Tenengrad for full images and foreground interiors.
+</em>
+</p>
 
-## 9. Real vs Synthetic Distribution Analysis
+<details>
+<summary>Sharpness calibration with blur and noise</summary>
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_b/sharpness_calibration/calibration_distributions.png" width="80%">
+<br>
+<em>
+Controlled perturbations demonstrate sensitivity to both blur and noise.
+</em>
+</p>
+</details>
 
+StyleGAN2's interior medians are closer to the real reference values for both measures. 
+DCGAN has higher medians, consistent with its visible high-frequency texture, although these 
+measurements cannot distinguish useful detail from noise. StyleGAN2's slightly lower interior Laplacian
+median may also reflect softer fine-scale detail. The distributions therefore complement the visual 
+comparison and FID rather than provide a standalone ranking of image quality.
 
-## 10. Memorisation and Privacy Audit
+## 8. Distribution Coverage and Diversity
 
-### 10.1 Motivation
-A synthetic image that closely reproduces a training patient scan may indicate memorisation rather than genuine generation. Therefore, visual realism alone is not sufficient.
+### 8.1 Joint t-SNE Embedding
 
-### 10.2 Nearest-Neighbour Analysis
-For each selected synthetic image:
-1. extract its representation;
-2. compare it against training images;
-3. identify its nearest training neighbour;
-4. report similarity / distance;
-5. visually inspect the image pair.
+The three cohorts were jointly embedded using PCA to 50 dimensions, followed by t-SNE with 
+perplexity 30 and seed 2026.
 
-### 10.3 Example Nearest-Neighbour Results
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_c/embedding_diversity/embedding/tsne_p30_seed2026_panels.png" width="100%">
+<br>
+<em>
+Group-specific views of the same joint t-SNE embedding; grey points show the remaining cohorts.
+</em>
+</p>
 
-| Synthetic Image | Nearest Training Image | Distance / Similarity | Observation |
-|---|---|---:|---|
-| Sample 1 | TODO | TODO | TODO |
-| Sample 2 | TODO | TODO | TODO |
-| Sample 3 | TODO | TODO | TODO |
+StyleGAN2 samples occupy much of the region populated by real images, whereas DCGAN forms several 
+largely separate clusters. This suggests that DCGAN generates a restricted collection of patterns 
+whose features differ from the real distribution. StyleGAN2 shows substantially better overlap, 
+consistent with its lower FID.
 
-#### Sample 1
+The same broad separation persists at perplexity 50, suggesting that the observation is not specific 
+to the selected perplexity. However, overlap in this projection does not establish complete coverage:
+t-SNE does not preserve global distances or distribution densities, and both this analysis and FID 
+use the same Inception representation.
 
-**Synthetic Image**
+### 8.2 Within-Cohort Pairwise SSIM
 
-![Synthetic Sample 1](images/synthetic_1.png)
+SSIM was calculated for 5,000 randomly sampled distinct-image pairs per group, with an additional 
+real-image reference restricted to different patients. Unlike Section 7.3, no nearest-neighbour matching was used.
 
-**Nearest Training Image**
+| Cohort / pairing | Mean SSIM | Median | 95th percentile |
+|---|---:|---:|---:|
+| Real (unrestricted) | 0.6634 | 0.6656 | 0.7117 |
+| Real (cross-patient) | 0.6631 | 0.6660 | 0.7137 |
+| DCGAN | 0.7076 | 0.6698 | 0.9894 |
+| StyleGAN2 | 0.6642 | 0.6663 | 0.7177 |
 
-![Nearest Training Sample 1](images/nearest_train_1.png)
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_c/embedding_diversity/pairwise_ssim/pairwise_ssim_ecdf.png" width="80%">
+<br>
+<em>
+Within-cohort pairwise SSIM distributions, including a real cross-patient reference.
+</em>
+</p>
 
-**Distance / Similarity:**  
-TODO
+DCGAN's median is close to the real reference, but its 95th percentile reaches 0.9894. 
+This pronounced high-similarity tail indicates that some independently generated images are nearly 
+identical, a failure that the median alone would conceal. Inspection of the highest-scoring pairs 
+confirms repeated outlines and internal textures, supporting partial mode collapse rather than 
+uniformly low diversity across all outputs.
 
-**Observation:**  
-TODO
+StyleGAN2 closely follows the real cross-patient distribution in both its centre and upper tail. 
+Its 95th percentile is 0.7177, compared with 0.7137 for real cross-patient pairs, with no comparable 
+near-identical tail among the sampled pairs. The unrestricted and cross-patient real curves also 
+nearly coincide, indicating that the reference pattern is not primarily driven by within-patient pairs.
 
+Together, these results support better preservation of image variation by StyleGAN2. 
+They do not establish complete anatomical or diagnostic diversity, because full-image SSIM remains 
+sensitive to shared background and slice geometry.
 
-## 11. Latent Space Investigation
+<details>
+<summary>Examples of near-identical DCGAN outputs</summary>
 
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_c/embedding_diversity/pairwise_ssim/dcgan_highest_pairs.png" width="80%">
+<br>
+<em>
+The four highest-SSIM pairs among the sampled DCGAN pairs. Distinct generated samples reproduce 
+nearly identical outlines and internal textures.
+</em>
+</p>
 
-## 12. Qualitative Results
+</details>
 
+## 9. Memorisation and Privacy Audit
 
-## 13. Failure Case Autopsy
+### 9.1 Training-Set Nearest Neighbours
 
-Analyse at least 3–5 representative failure cases from the generated results.
+Each generated image was compared against all 17,480 training slices using Euclidean distance in 
+Inception feature space. Real validation images from patients absent from training provided the primary control.
 
-### Failure Case 1 — TODO
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_c/memorization/nearest_train_distance_ecdf.png" width="80%">
+<br>
+<em>
+Nearest-training-image distance distributions. The dashed line marks the first percentile of the validation control distances.
+</em>
+</p>
 
-**Observed Failure:**  
-stylegan2 000131
+| Query cohort | Median nearest-training distance |
+|---|---:|
+| Real validation, unseen patients | 6.687 |
+| Real test, unseen patients | 6.744 |
+| DCGAN | 8.932 |
+| StyleGAN2 | 6.800 |
 
-**Possible Trigger:**  
-TODO
+StyleGAN2's distance distribution closely follows the unseen-patient controls, rather than showing 
+a broad shift towards unusually close training matches. This is consistent with learning shared 
+image characteristics without widespread near-copying detectable by this representation. 
+DCGAN's larger distances instead align with its poorer distributional fidelity; distance alone 
+cannot rank privacy protection.
 
-**Likely Model Behaviour:**  
-TODO
+The unseen-patient controls are important because the original test partition contains patients 
+also present in training. Using all test images alone could make unusually close training matches 
+appear less exceptional.
 
-**Engineering Significance:**  
-TODO
+### 9.2 Exact Matches and Flagged Samples
 
----
+Generated images were flagged when their nearest-training distance was below 4.8589, the first 
+percentile of validation control distances. The five nearest feature candidates were additionally 
+compared using SSIM and pixel error, without image registration.
 
-### Failure Case 2 — TODO
+| Audit result | DCGAN | StyleGAN2 |
+|---|---:|---:|
+| Generated images audited | 5,000 | 5,000 |
+| Exact training-image pixel matches | 0 | 0 |
+| Flagged candidates | 0 (0.00%) | 30 (0.60%) |
+| Distinct nearest training images | 267 | 3,242 |
+| Distinct nearest training patients | 106 | 420 |
+| Maximum queries sharing one nearest training image | 576 | 11 |
 
-**Observed Failure:**  
-stylegan2 000158
+Neither cohort contains an exact training-image match in the evaluated uint8 representation. 
+StyleGAN2's 30 flagged images occupy the unusually close tail of the feature-distance distribution, 
+but the flag is a screening rule rather than a memorisation decision. Its 0.60% flag rate does not 
+estimate the probability of privacy leakage.
 
-**Possible Trigger:**  
-TODO
+DCGAN's nearest-neighbour assignments are highly concentrated: 576 outputs share a single nearest 
+training image, compared with 11 for StyleGAN2. Together with the repeated outputs observed in Section 8, 
+this supports restricted generation rather than evidence that the matched training image was copied. 
+StyleGAN2's assignments are more widely distributed, although this does not establish complete patient
+or anatomical coverage.
 
-**Likely Model Behaviour:**  
-TODO
+### 9.3 Interpretation and Audit Limitations
 
-**Engineering Significance:**  
-TODO
+The automated audit found no exact training-image copies and no broad excess of unusually small 
+feature distances for StyleGAN2. The 30 flagged candidates remain unresolved pending further examination.
 
----
+These findings apply only to the sampled outputs and the chosen representation. Inception features 
+may miss medically meaningful or transformed copies, and candidate SSIM searches cover only the five 
+feature neighbours rather than every training image. The audit therefore provides limited empirical 
+evidence about memorisation, not a formal privacy guarantee or a membership-inference evaluation.
 
-### Failure Case 3 — TODO
+## 10. Latent Space Investigation
 
-**Observed Failure:**  
-stylegan2 000400
-stylegan2 001444
-stylegan2 001800
-stylegan2 003184
+### 10.1 Random Latent Interpolation
 
-**Possible Trigger:**  
-TODO
+Nine frames were generated along each path, using spherical interpolation in Z and linear 
+interpolation in StyleGAN2's shared W space. StyleGAN2 synthesis noise was held constant.
 
-**Likely Model Behaviour:**  
-TODO
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/dcgan/random_interpolation/pair_00/z_slerp/interpolation.png" width="100%">
+<br>
+<em>DCGAN: the first sampled Z interpolation.</em>
+</p>
 
-**Engineering Significance:**  
-TODO
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/random_interpolation/pair_00/z_slerp/interpolation.png" width="100%">
+<br>
+<em>StyleGAN2: the first sampled Z interpolation.</em>
+</p>
 
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/random_interpolation/pair_00/w_lerp/interpolation.png" width="100%">
+<br>
+<em>StyleGAN2: W interpolation between the mapped versions of the same endpoints.</em>
+</p>
 
-## 14. Fidelity–Memorization–Privacy Trade-off
-Summarise the central engineering dilemma.
+DCGAN changes markedly between the first two displayed frames, followed by a long interval of nearly 
+unchanged outputs. This suggests that substantial latent variation maps to similar images, 
+consistent with the repetitive outputs identified in Section 8.
 
+StyleGAN2 shows more gradual changes in outline, internal structure and contrast across both paths. 
+Its Z and W paths share endpoints but follow different intermediate appearances. These examples 
+demonstrate useful latent variation, but do not establish that W interpolation is systematically 
+smoother or that individual anatomical attributes are disentangled.
 
-## 15. Engineering Recommendation
+### 10.2 Real-Image Projection
 
+Four real slices were projected: one AD and one NC image from each of the training and validation sets. 
+Generator weights were frozen while optimising DCGAN's Z or StyleGAN2's shared W, using two restarts of
+800 steps. StyleGAN2 noise was fixed and not optimised.
 
-## 16. Limitations
+| Target | DCGAN SSIM | StyleGAN2 SSIM | DCGAN foreground MAE | StyleGAN2 foreground MAE |
+|---|---:|---:|---:|---:|
+| Train AD | 0.6526 | 0.7902 | 0.2354 | 0.1015 |
+| Train NC | 0.7099 | 0.8263 | 0.2501 | 0.0815 |
+| Validation AD | 0.7132 | 0.8425 | 0.2051 | 0.0867 |
+| Validation NC | 0.6980 | 0.8242 | 0.2106 | 0.0762 |
 
+Foreground MAE uses the union of target and reconstruction pixels with intensity above 0.05. 
+Metrics are calculated from exported images after clipping and uint8 conversion.
 
-## 17. Conclusion
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/dcgan/projection/validation_AD_00/reconstruction_comparison.png" width="80%">
+<br>
+<em>DCGAN projection of the selected validation AD slice.</em>
+</p>
 
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/projection/validation_AD_00/reconstruction_comparison.png" width="80%">
+<br>
+<em>StyleGAN2 projection of the same target.</em>
+</p>
 
-## 18. Usage
+StyleGAN2 achieves higher SSIM and lower foreground error on all four targets. In the displayed example, 
+it better reproduces the overall shape and major internal structures, while fine folds remain 
+blurred or displaced. DCGAN retains stronger texture and structural mismatches. 
+Thus, the improvement extends beyond agreement over the black background.
 
+The optimisation records qualify this comparison. Three DCGAN targets reach their best objective 
+within the first 15 steps, whereas all StyleGAN2 targets reach their best values at steps 799–800. 
+This suggests that DCGAN's results are affected by the optimisation trajectory, while StyleGAN2 may 
+still benefit from a larger optimisation budget. The comparison therefore measures reconstruction 
+under the chosen procedure, not each model's best achievable reconstruction.
 
-## 19. Artificial Intelligence Usage Disclosure
+The latent spaces also differ in dimension and constraints. Four targets are insufficient to infer 
+a population-level reconstruction advantage or a training-versus-validation generalisation gap.
+
+### 10.3 Interpolation Involving Projected Images
+
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/synthetic_to_projection/validation_AD_00/interpolation.png" width="100%">
+<br>
+<em>
+StyleGAN2 interpolation from a random generated image to the validation AD projection. The final reference image is the real target.
+</em>
+</p>
+
+<p align="center">
+<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/projected_real_interpolation/AD_00/interpolation.png" width="100%">
+<br>
+<em>
+StyleGAN2 interpolation between two projected AD targets. The outermost images are real references; 
+generated endpoints are their approximate reconstructions.
+</em>
+</p>
+
+Both paths show gradual changes in shape and internal appearance without the prolonged repetition seen in the displayed DCGAN random interpolation. However, reconstruction errors persist at the endpoints, and intermediate images can be softer than the real references. A visually continuous path therefore demonstrates navigability within the learned generator, not faithful recovery of every structure between the targets.
+
+These interpolations are synthetic transitions between latent codes. They do not represent adjacent 
+MRI slices, longitudinal disease progression or controlled changes in diagnosis.
+
+## 11. Training Behaviour and Computational Cost
+
+### 11.1 Training Behaviour
+
+DCGAN developed a strong training imbalance: by epoch 100, discriminator loss fell to 0.041 while 
+generator loss reached 11.108. StyleGAN2's adversarial losses stabilised after approximately 15 epochs, 
+with training and validation curves remaining relatively close. This suggests more stable adversarial behaviour, 
+although loss values alone do not establish generation quality.
+
+### 11.2 Training Time and GPU Memory
+
+| Measurement | DCGAN | StyleGAN2 |
+|---|---:|---:|
+| Generator parameters | 8.03 million | 24.76 million |
+| Training batch size | 16 | 64 |
+| Recorded duration over 100 epochs | 39.20 min* | 22.47 h |
+| Peak allocated training memory | 1.28 GiB† | 37.33 GiB |
+| Peak reserved training memory | 1.30 GiB† | 38.98 GiB |
+
+*Training times use different scopes: DCGAN sums epoch logs. StyleGAN2 excludes validation, sampling and checkpoint I/O.
+
+†DCGAN memory comes from a separate three-epoch run, including the initial peak. 
+Memory figures refer to the PyTorch allocator.
+
+StyleGAN2 has 3.1× more generator parameters and substantially higher resource costs, although 
+differing batch sizes and measurement procedures limit direct comparison.
+
+### 11.3 Generation Throughput and Latency
+
+Both models were benchmarked on the A100 using 10 warm-up iterations and 50 measured iterations, with CUDA synchronisation.
+
+| Measurement | DCGAN | StyleGAN2 |
+|---|---:|---:|
+| Forward throughput, batch size 32 | 12,916 images/s | 385 images/s |
+| Mean single-image latency, batch size 1 | 0.77 ms | 8.99 ms |
+| End-to-end PNG export throughput | 281.8 images/s | 139.4 images/s |
+
+Forward timings exclude transfers and file writing, with latent inputs already on the GPU. 
+Export timings additionally include transfer, image conversion and PNG/manifest writing.
+
+DCGAN achieves approximately 33.5 times the batch-forward throughput and 11.7 times lower 
+single-image latency. The export throughput gap narrows to approximately twofold because 
+non-forward processing forms a substantial part of the workflow. StyleGAN2 therefore trades 
+considerably higher computational cost for the improved fidelity and diversity demonstrated in Sections 7–8.
+
+## 12. Failure Case Analysis
+
+## 13. Engineering Discussion and Limitations
+
+## 14. Conclusion
+
+## 15. Usage
+
+## 16. Artificial Intelligence Usage Disclosure
 ChatGPT was used during the development of this project.
 Used to assist in learning, building network architectures and evaluation metrics, and debugging code.
 
 
-## 20. References
+## 17. References
 [1] J. Hayes et al., "LOGAN: Membership Inference Attacks Against Generative Models," *PoPETs*, 2019.
 [Paper](https://arxiv.org/abs/1705.07663)
 
