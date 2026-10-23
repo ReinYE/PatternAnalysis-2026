@@ -4,11 +4,24 @@
 
 This project investigates the generation of synthetic brain MRI images using StyleGAN2 on the ADNI dataset.
 
-The egineering dilemma is the fidelity-memorization-privacy trade-off in synthetic medical image generation. A useful generative model should produce produce genuinely novel, diverse, and anatomically coherent scans while avoiding memorisation of individual training samples.
+The egineering dilemma is the fidelity-memorization-privacy trade-off in synthetic medical image generation. A useful generative model should produce diverse synthetic MRI slices while avoiding memorisation of individual training samples.
 
 The proposed model is evaluated against a simpler baseline generative model using Structural Similarity Index (SSIM) for image fidelity, distributional metrics such as FID or feature-space distance, t-SNE/UMAP analysis of real and synthetic samples, qualitative failure-case inspection, and nearest-neighbour analysis for potential training-data memorisation.
 
 ## 1. Engineering Problem and Motivation
+Medical-imaging and machine-learning researchers need varied image data to develop and evaluate 
+computational methods, but access to patient images is constrained by data availability and privacy 
+requirements. Synthetic brain MRI generation offers a potential source of supplementary research images. 
+This project investigates whether a generative model can capture structural variation in the available data and produce additional samples that warrant further investigation for research use.
+
+The engineering challenge extends beyond generating visually convincing images. 
+The model may reproduce the overall brain outline while losing structural details, 
+generate similar outputs, or produce images that closely resemble individual training samples. 
+Furthermore, generative models can also expose information about their training data, 
+as demonstrated by the membership-inference attacks in LOGAN [1]. 
+These concerns motivate a joint assessment of fidelity, diversity, memorisation risk and computational cost. 
+The central question is whether StyleGAN2 [2][3] improves image quality and diversity sufficiently over DCGAN [4] 
+to justify its additional computational demands, while avoiding obvious memorization of training images.
 
 
 ## 2. Feasibility Review
@@ -19,15 +32,16 @@ The intended users of this prototype are medical-imaging and machine-learning re
 who require additional brain MRI data for model development but face limited clinical scan 
 availability and patient privacy.
 
-This project is to investigate whether StyleGAN2 can  produce genuinely novel, diverse, and anatomically
-coherent scans without simply memorising training patients. 
+This project is to investigate whether StyleGAN2 can produce genuinely novel, diverse, and anatomically
+coherent scans without simply memorising training patients. Structural similarity is assessed 
+using SSIM [5], while distributional similarity is assessed using Fréchet Inception Distance (FID) [6]
 
-A DCGAN is used as a simpler baseline to determine whether the additional architectural 
-and computational complexity of StyleGAN2 provides a meaningful engineering advantage.
+A DCGAN is used as a simpler baseline to assess whether StyleGAN2's additional architectural 
+and computational complexity provides a meaningful engineering advantage.
 
 The prototype will be evaluated against the following criteria:
 
-1. The generated cohort should achieve approximately SSIM > 0.6 against appropriate reference anatomical images.
+1. Reference-paired SSIM will be reported using the predefined nearest-neighbour matching protocol, including the proportion of generated images with SSIM > 0.6. This threshold is treated as a project evaluation target rather than evidence of clinical validity.
 2. StyleGAN2 should provide measurable improvement over the DCGAN baseline in structural fidelity and distribution fidelity.
 3. Generated samples and real-versus-synthetic embedding analysis should not show obvious mode collapse or severely restricted diversity.
 4. Nearest-neighbour analysis should not reveal obvious near-duplicate training images that would indicate potential memorisation.
@@ -43,9 +57,9 @@ Compared with the original StyleGAN, StyleGAN2 improves the synthesis architectu
 
 ### 3. Preliminary Feasibility Evidence
 
-An initial audit of the ADNI dataset will document the number of patients, usable slices, original image dimensions, preprocessing resolution and normalisation strategy. The evaluation set will be split off from the training set by patient. The DCGAN baseline is trained with the preprocessed ADNI data to establish initial quality and resource benchmarks. And StyleGAN2 will be trained using the same preprocessed datasets.
+An initial audit of the ADNI dataset will document the number of patients, usable slices, original image dimensions, preprocessing resolution and normalisation strategy. The validation set is separated from the training data by patient, while the supplied test partition is retained. The DCGAN baseline is trained with the preprocessed ADNI data to establish initial quality and resource benchmarks. And StyleGAN2 will be trained using the same preprocessed datasets.
 
-An initial StyleGAN2 smoke test has successfully run on an NVIDIA A100 40GB GPU in the cluster rangpur. At batch size 8, the first training epoch processed approximately 17.48 kimg and required 1191 s. Peak allocated GPU memory was 36.24 GiB and peak reserved memory was 36.46 GiB. The first epoch incurred additional GPU memory overhead from CUDA/cuDNN initialization and warm-up. Once the convolution algorithms and memory buffers had been initialised, subsequent epochs stabilised at below approximately 7 GiB of reserved VRAM.
+An initial StyleGAN2 smoke test has successfully run on an NVIDIA A100 40GB GPU in the cluster rangpur. At batch size 8, the first training epoch processed approximately 17.48 kimg and required 1191 s. Peak allocated GPU memory was 36.24 GiB and peak reserved memory was 36.46 GiB. The higher first-epoch memory peak is consistent with additional startup and convolution algorithm-selection overhead. Once the convolution algorithms and memory buffers had been initialised, subsequent epochs stabilised at below approximately 7 GiB of reserved VRAM.
 
 These results indicate that the current model configuration fits within the available 40 GB GPU memory, although training cost is significant.
 
@@ -227,21 +241,23 @@ ChatGPT was used during the development of this project.
 Used to assist in learning, building network architectures and evaluation metrics, and debugging code.
 
 
-## 20. Referneces
-
-[1] A. Radford, L. Metz, and S. Chintala, "Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks," in *Proc. ICLR*, 2016. [Paper](https://arxiv.org/abs/1511.06434)
+## 20. References
+[1] J. Hayes et al., "LOGAN: Membership Inference Attacks Against Generative Models," *PoPETs*, 2019.
+[Paper](https://arxiv.org/abs/1705.07663)
 
 [2] T. Karras, S. Laine, and T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," in *Proc. CVPR*, 2019. [Paper](https://arxiv.org/abs/1812.04948)
 
 [3] T. Karras et al., "Analyzing and Improving the Image Quality of StyleGAN," in *Proc. CVPR*, 2020. [Paper](https://arxiv.org/abs/1912.04958)
 
-[4] NVIDIA Research (NVlabs), "StyleGAN2-ADA — Official PyTorch Implementation," GitHub Repository. [Online]. Available: https://github.com/NVlabs/stylegan2-ada-pytorch
+[4] A. Radford, L. Metz, and S. Chintala, "Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks," in *Proc. ICLR*, 2016. [Paper](https://arxiv.org/abs/1511.06434)
 
 [5] Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [Paper](https://doi.org/10.1109/TIP.2003.819861)
 
 [6] M. Heusel et al., "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," in *Proc. NeurIPS*, 2017. [Paper](https://arxiv.org/abs/1706.08500)
 
-[7] T. Karras et al., "Training Generative Adversarial Networks with Limited Data," in *Proc. NeurIPS*, 2020. [Paper](https://arxiv.org/abs/2006.06676)
+[7] NVIDIA Research (NVlabs), "StyleGAN2-ADA — Official PyTorch Implementation," GitHub Repository. [Online]. Available: https://github.com/NVlabs/stylegan2-ada-pytorch
 
-[8] S. Pertuz, D. Puig, and M. A. Garcia, "Analysis of Focus Measure Operators for Shape-from-Focus," *Pattern Recognition*, vol. 46, no. 5, pp. 1415–1432, 2013. [Paper](https://doi.org/10.1016/j.patcog.2012.11.011)
+[8] T. Karras et al., "Training Generative Adversarial Networks with Limited Data," in *Proc. NeurIPS*, 2020. [Paper](https://arxiv.org/abs/2006.06676)
+
+[9] S. Pertuz, D. Puig, and M. A. Garcia, "Analysis of Focus Measure Operators for Shape-from-Focus," *Pattern Recognition*, vol. 46, no. 5, pp. 1415–1432, 2013. [Paper](https://doi.org/10.1016/j.patcog.2012.11.011)
 
