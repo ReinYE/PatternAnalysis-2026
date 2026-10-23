@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
+import random
 
 import numpy as np
 import torch
@@ -1998,6 +1999,856 @@ def ssim_main(argv=None):
     )
 
 
+SHARPNESS_KEYS = (
+    "laplacian_full",
+    "laplacian_interior",
+    "tenengrad_full",
+    "tenengrad_interior",
+)
+
+
+def make_sharpness_roi(image, settings):
+    """Construct an approximate foreground interior, not a tissue label."""
+    from scipy import ndimage as ndi
+
+    threshold_mask = image > settings["foreground_threshold"]
+
+    labels, component_count = ndi.label(
+        threshold_mask,
+        structure=np.ones((3, 3), dtype=np.uint8),
+    )
+
+    foreground = np.zeros_like(threshold_mask, dtype=bool)
+    largest_component_fraction = 0.0
+
+    if component_count:
+        sizes = np.bincount(labels.ravel())
+        sizes[0] = 0
+        largest_label = int(sizes.argmax())
+
+        foreground = labels == largest_label
+        largest_component_fraction = int(foreground.sum()) / int(threshold_mask.sum())
+
+        # Include enclosed dark structures in the foreground envelope.
+        foreground = ndi.binary_fill_holes(foreground)
+
+    # Padding explicitly treats pixels outside the image as background.
+    padded = np.pad(
+        foreground,
+        pad_width=1,
+        mode="constant",
+        constant_values=False,
+    )
+    distance = ndi.distance_transform_edt(padded)[1:-1, 1:-1]
+
+    interior = foreground & (distance > settings["erosion_pixels"])
+
+    foreground_fraction = float(foreground.mean())
+    interior_pixels = int(interior.sum())
+
+    reasons = []
+
+    if foreground_fraction < settings["minimum_foreground_fraction"]:
+        reasons.append("foreground_too_small")
+
+    if foreground_fraction > settings["maximum_foreground_fraction"]:
+        reasons.append("foreground_too_large")
+
+    if interior_pixels < settings["minimum_interior_pixels"]:
+        reasons.append("insufficient_interior_pixels")
+
+    information = {
+        "roi_valid": not reasons,
+        "roi_failure_reason": ";".join(reasons),
+        "foreground_fraction": foreground_fraction,
+        "interior_fraction": float(interior.mean()),
+        "interior_pixels": interior_pixels,
+        "threshold_component_count": int(component_count),
+        "largest_component_fraction": float(largest_component_fraction),
+    }
+
+    return interior, information
+
+
+def measure_sharpness(image, interior, roi_valid):
+    """Compute derivative responses before applying the evaluation region."""
+    from scipy import ndimage as ndi
+
+    image = np.asarray(image, dtype=np.float64)
+
+    if image.shape != (256, 256):
+        raise ValueError(f"Unexpected image shape: {image.shape}")
+
+    if not np.isfinite(image).all():
+        raise FloatingPointError("Image contains NaN or Inf.")
+
+    if image.min() < 0.0 or image.max() > 1.0:
+        raise ValueError("Expected image values in [0, 1].")
+
+    # Approximate 2D Laplacian: four-neighbor second derivative.
+    laplacian = ndi.laplace(image, mode="reflect")
+
+    # Normalised 3x3 Sobel responses.
+    gradient_x = ndi.sobel(image, axis=1, mode="reflect") / 8.0
+    gradient_y = ndi.sobel(image, axis=0, mode="reflect") / 8.0
+    gradient_energy = gradient_x**2 + gradient_y**2
+
+    values = {
+        "laplacian_full": float(np.var(laplacian, ddof=0)),
+        "laplacian_interior": None,
+        "tenengrad_full": float(np.mean(gradient_energy)),
+        "tenengrad_interior": None,
+    }
+
+    if roi_valid:
+        values["laplacian_interior"] = float(np.var(laplacian[interior], ddof=0))
+        values["tenengrad_interior"] = float(np.mean(gradient_energy[interior]))
+
+    for key, value in values.items():
+        if value is not None and (not np.isfinite(value) or value < 0.0):
+            raise FloatingPointError(f"Invalid {key}: {value}")
+
+    return values
+
+
+def sharpness_implementation_hash():
+    """Fingerprint the functions that define the measurement."""
+    import inspect
+
+    return object_sha256(
+        {
+            "roi_function": inspect.getsource(make_sharpness_roi),
+            "metric_function": inspect.getsource(measure_sharpness),
+        }
+    )
+
+
+def sharpness_versions():
+    return {
+        "numpy": version("numpy"),
+        "scipy": version("scipy"),
+        "Pillow": version("Pillow"),
+        "torch": str(torch.__version__),
+    }
+
+
+def sharpness_numeric_summary(values):
+    values = np.asarray(
+        [value for value in values if value is not None],
+        dtype=np.float64,
+    )
+
+    if len(values) == 0:
+        return {"count": 0}
+
+    return {
+        "count": len(values),
+        "mean": float(values.mean()),
+        "std": float(values.std(ddof=1)) if len(values) > 1 else None,
+        "median": float(np.median(values)),
+        "q25": float(np.quantile(values, 0.25)),
+        "q75": float(np.quantile(values, 0.75)),
+        "p05": float(np.quantile(values, 0.05)),
+        "p95": float(np.quantile(values, 0.95)),
+        "minimum": float(values.min()),
+        "maximum": float(values.max()),
+    }
+
+
+def summarize_sharpness_rows(rows):
+    return {
+        "image_count": len(rows),
+        "valid_roi_count": sum(bool(row["roi_valid"]) for row in rows),
+        "invalid_roi_count": sum(not row["roi_valid"] for row in rows),
+        "metrics": {
+            key: sharpness_numeric_summary([row[key] for row in rows])
+            for key in SHARPNESS_KEYS
+        },
+        "foreground_fraction": sharpness_numeric_summary(
+            [row["foreground_fraction"] for row in rows]
+        ),
+        "interior_fraction": sharpness_numeric_summary(
+            [row["interior_fraction"] for row in rows]
+        ),
+    }
+
+
+def sharpness_pyplot():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
+def save_sharpness_roi_examples(examples, path):
+    """Show the image, approximate interior, and an overlay."""
+    if not examples:
+        return
+
+    plt = sharpness_pyplot()
+
+    fig, axes = plt.subplots(
+        len(examples),
+        3,
+        figsize=(10, 3 * len(examples)),
+        squeeze=False,
+    )
+
+    for row_index, example in enumerate(examples):
+        image = example["image"]
+        interior = example["interior"]
+        information = example["information"]
+
+        axes[row_index, 0].imshow(image, cmap="gray", vmin=0, vmax=1)
+        axes[row_index, 0].set_title(example["sample_id"], fontsize=9)
+
+        axes[row_index, 1].imshow(interior, cmap="gray", vmin=0, vmax=1)
+        axes[row_index, 1].set_title(
+            f"Interior: {information['interior_fraction']:.1%}\n"
+            f"Valid heuristic ROI: {information['roi_valid']}",
+            fontsize=9,
+        )
+
+        axes[row_index, 2].imshow(image, cmap="gray", vmin=0, vmax=1)
+
+        overlay = np.zeros((*image.shape, 4), dtype=np.float64)
+        overlay[interior] = [1.0, 0.0, 0.0, 0.3]
+        axes[row_index, 2].imshow(overlay)
+
+        axes[row_index, 2].set_title(
+            information["roi_failure_reason"] or "Interior overlay",
+            fontsize=9,
+        )
+
+        for axis in axes[row_index]:
+            axis.axis("off")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def save_sharpness_distributions(rows_by_group, path):
+    """Plot every observed value using empirical cumulative distributions."""
+    plt = sharpness_pyplot()
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+
+    for axis, key in zip(axes.ravel(), SHARPNESS_KEYS):
+        for name, rows in rows_by_group.items():
+            values = np.asarray(
+                [row[key] for row in rows if row[key] is not None],
+                dtype=np.float64,
+            )
+
+            if not len(values):
+                continue
+
+            values.sort()
+            cumulative = np.arange(1, len(values) + 1) / len(values)
+
+            axis.plot(
+                values,
+                cumulative,
+                label=f"{name} (n={len(values)})",
+                linewidth=1.5,
+            )
+
+        axis.set_title(key)
+        axis.set_xlabel("Score (symlog scale)")
+        axis.set_ylabel("Cumulative proportion")
+        axis.set_xscale("symlog", linthresh=1e-8)
+        axis.set_ylim(0, 1)
+        axis.grid(alpha=0.2)
+        axis.legend(fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def load_sharpness_validation_dataset(args):
+    """Select one validation slice per sampled patient."""
+    from collections import defaultdict
+
+    stage_a = read_json(args.cohort_dir / "protocol.json")
+
+    if stage_a.get("status") != "complete":
+        raise ValueError("Stage A is not complete.")
+
+    snapshot = args.cohort_dir / "source_splits.json"
+
+    verify_hash(
+        snapshot,
+        stage_a["real_reference"]["source_manifest_sha256"],
+        "source split snapshot",
+    )
+
+    split_payload = read_json(snapshot)
+    records = split_payload["splits"]["validation"]
+
+    groups = defaultdict(list)
+    for record in records:
+        groups[record["subject_id"]].append(record)
+
+    if args.calibration_count > len(groups):
+        raise ValueError(
+            f"Requested {args.calibration_count} validation patients, "
+            f"but only {len(groups)} are available."
+        )
+
+    rng = random.Random(args.seed)
+    patients = rng.sample(sorted(groups), args.calibration_count)
+
+    selected = []
+    for index, patient in enumerate(patients):
+        candidates = sorted(
+            groups[patient],
+            key=lambda record: record["relative_path"],
+        )
+        record = dict(rng.choice(candidates))
+        record["reference_id"] = f"validation_{index:04d}"
+        selected.append(record)
+
+    spec = {
+        "root": args.data_root.resolve(),
+        "rows": selected,
+        "id_field": "reference_id",
+        "manifest_sha256": object_sha256(selected),
+        "kind": "real",
+    }
+
+    return EvaluationImageDataset("validation", spec)
+
+
+def run_sharpness_calibration(args):
+    from scipy import ndimage as ndi
+
+    settings = {
+        "foreground_threshold": args.foreground_threshold,
+        "erosion_pixels": args.erosion_pixels,
+        "minimum_foreground_fraction": 0.01,
+        "maximum_foreground_fraction": 0.80,
+        "minimum_interior_pixels": 128,
+        "foreground_connectivity": 8,
+        "keep_largest_component": True,
+        "fill_enclosed_holes": True,
+        "erosion_method": "euclidean_distance_greater_than_radius",
+        "laplacian": "scipy_ndimage_laplace_2d",
+        "laplacian_variance_ddof": 0,
+        "tenengrad": "mean((sobel_x/8)^2 + (sobel_y/8)^2)",
+        "derivative_boundary_mode": "reflect",
+        "image_range": [0.0, 1.0],
+        "image_dtype": "float64",
+        "image_shape": [256, 256],
+        "derivatives_before_masking": True,
+    }
+
+    dataset = load_sharpness_validation_dataset(args)
+
+    # This is recorded once, before any perturbation is applied.
+    content_hash = dataset.content_sha256()
+
+    conditions = [
+        "original",
+        "blur_sigma_0.5",
+        "blur_sigma_1.0",
+        "blur_sigma_2.0",
+        "noise_std_0.01",
+        "noise_std_0.03",
+    ]
+
+    rows = []
+    examples = []
+    perturbation_examples = []
+
+    for index in range(len(dataset)):
+        image = load_ssim_image(dataset, index)
+        interior, information = make_sharpness_roi(image, settings)
+
+        rng = np.random.default_rng(args.seed + index)
+        standard_noise = rng.standard_normal(image.shape)
+
+        variants = {"original": image}
+        clipping = {"original": 0.0}
+
+        for sigma in (0.5, 1.0, 2.0):
+            name = f"blur_sigma_{sigma}"
+            variants[name] = ndi.gaussian_filter(
+                image,
+                sigma=sigma,
+                mode="reflect",
+                truncate=4.0,
+            )
+            clipping[name] = 0.0
+
+        for std in (0.01, 0.03):
+            name = f"noise_std_{std}"
+            noisy = image + std * standard_noise
+
+            clipping[name] = float(((noisy < 0.0) | (noisy > 1.0)).mean())
+            variants[name] = np.clip(noisy, 0.0, 1.0)
+
+        # Every variant uses the ORIGINAL image's identical interior mask.
+        for condition in conditions:
+            row = {
+                "sample_id": dataset.sample_ids[index],
+                "relative_path": dataset.relative_paths[index],
+                "subject_id": dataset.rows[index]["subject_id"],
+                "condition": condition,
+                "noise_seed": args.seed + index,
+                "perturbation_clipped_fraction": clipping[condition],
+                **information,
+                **measure_sharpness(
+                    variants[condition],
+                    interior,
+                    information["roi_valid"],
+                ),
+            }
+            rows.append(row)
+
+        if index < 4:
+            examples.append(
+                {
+                    "sample_id": dataset.sample_ids[index],
+                    "image": image,
+                    "interior": interior,
+                    "information": information,
+                }
+            )
+            perturbation_examples.append(variants)
+
+        print(
+            f"Calibration: {index + 1}/{len(dataset)}",
+            flush=True,
+        )
+
+    atomic_write_ssim_csv(
+        args.output_dir / "calibration_pairs.csv",
+        rows,
+    )
+    atomic_write_ssim_csv(
+        args.output_dir / "validation_manifest.csv",
+        dataset.rows,
+    )
+
+    save_sharpness_roi_examples(
+        examples,
+        args.output_dir / "validation_roi_examples.png",
+    )
+
+    # Fixed examples: original, increasing blur, and added noise.
+    plt = sharpness_pyplot()
+    fig, axes = plt.subplots(
+        len(perturbation_examples),
+        len(conditions),
+        figsize=(18, 3 * len(perturbation_examples)),
+        squeeze=False,
+    )
+
+    for index, variants in enumerate(perturbation_examples):
+        for column, condition in enumerate(conditions):
+            axes[index, column].imshow(
+                variants[condition],
+                cmap="gray",
+                vmin=0,
+                vmax=1,
+            )
+            axes[index, column].set_title(condition, fontsize=8)
+            axes[index, column].axis("off")
+
+    fig.tight_layout()
+    fig.savefig(args.output_dir / "perturbation_examples.png", dpi=150)
+    plt.close(fig)
+
+    grouped = {
+        condition: [row for row in rows if row["condition"] == condition]
+        for condition in conditions
+    }
+
+    save_sharpness_distributions(
+        grouped,
+        args.output_dir / "calibration_distributions.png",
+    )
+
+    # Summarise matched per-image score changes relative to the original.
+    baseline = {row["sample_id"]: row for row in grouped["original"]}
+
+    paired_changes = {}
+
+    for condition in conditions[1:]:
+        paired_changes[condition] = {}
+
+        for metric in SHARPNESS_KEYS:
+            deltas = []
+
+            for row in grouped[condition]:
+                original = baseline[row["sample_id"]][metric]
+                changed = row[metric]
+
+                if original is not None and changed is not None:
+                    deltas.append(changed - original)
+
+            paired_changes[condition][metric] = {
+                "delta_summary": sharpness_numeric_summary(deltas),
+                "fraction_lower_than_original": (
+                    float(np.mean(np.asarray(deltas) < 0.0)) if deltas else None
+                ),
+            }
+
+    report = {
+        "schema_version": 1,
+        "status": "complete",
+        "phase": "validation_calibration",
+        "settings": settings,
+        "implementation_sha256": sharpness_implementation_hash(),
+        "dataset_source_sha256": file_sha256(
+            Path(__file__).resolve().parent / "dataset.py"
+        ),
+        "versions": sharpness_versions(),
+        "sample_count": len(dataset),
+        "patient_sampling": "one_random_slice_per_sampled_validation_patient",
+        "seed": args.seed,
+        "validation_image_content_sha256": content_hash,
+        "source_manifest_sha256": file_sha256(args.cohort_dir / "source_splits.json"),
+        "mask_policy": "original_image_mask_shared_by_all_perturbations",
+        "results": {
+            condition: summarize_sharpness_rows(group_rows)
+            for condition, group_rows in grouped.items()
+        },
+        "paired_changes": paired_changes,
+        "completed_utc": utc_now(),
+    }
+
+    atomic_write_json(
+        args.output_dir / "sharpness_protocol.json",
+        report,
+    )
+
+    original_summary = report["results"]["original"]
+    print(
+        "Calibration complete. "
+        f"Valid interiors: {original_summary['valid_roi_count']}/"
+        f"{len(dataset)}",
+        flush=True,
+    )
+
+
+def load_frozen_sharpness_protocol(args):
+    if args.protocol is None:
+        raise ValueError("--protocol is required for cohort evaluation.")
+
+    protocol = read_json(args.protocol)
+
+    if (
+        protocol.get("schema_version") != 1
+        or protocol.get("status") != "complete"
+        or protocol.get("phase") != "validation_calibration"
+    ):
+        raise ValueError("Invalid or incomplete sharpness protocol.")
+
+    if protocol["implementation_sha256"] != sharpness_implementation_hash():
+        raise ValueError("Sharpness/ROI functions changed after calibration.")
+
+    if protocol["versions"] != sharpness_versions():
+        raise ValueError("Measurement dependencies differ from calibration.")
+
+    current_dataset_hash = file_sha256(Path(__file__).resolve().parent / "dataset.py")
+
+    if protocol["dataset_source_sha256"] != current_dataset_hash:
+        raise ValueError("dataset.py changed after calibration.")
+
+    if protocol["source_manifest_sha256"] != file_sha256(
+        args.cohort_dir / "source_splits.json"
+    ):
+        raise ValueError("Split snapshot differs from calibration.")
+
+    return protocol
+
+
+def run_sharpness_cohort(args):
+    frozen = load_frozen_sharpness_protocol(args)
+    settings = frozen["settings"]
+
+    # Reuse previous consistency checks, then release the unneeded features.
+    features, provenance, extraction_config, reference_split = load_fid_feature_caches(
+        args.cache_dir,
+        args.expected_count,
+    )
+    del features
+
+    _, datasets = load_ssim_datasets(
+        args,
+        provenance,
+        extraction_config,
+    )
+
+    results = {}
+    rows_by_group = {}
+    invalid_rows = []
+
+    for name in ("real", "dcgan", "stylegan2"):
+        dataset = datasets[name]
+        rows = []
+        random_examples = []
+        failed_examples = []
+
+        rng = np.random.default_rng(args.seed)
+        example_indices = set(
+            rng.choice(len(dataset), size=min(4, len(dataset)), replace=False).tolist()
+        )
+
+        for index in range(len(dataset)):
+            image = load_ssim_image(dataset, index)
+            interior, information = make_sharpness_roi(image, settings)
+
+            values = measure_sharpness(
+                image,
+                interior,
+                information["roi_valid"],
+            )
+
+            row = {
+                "group": name,
+                "sample_id": dataset.sample_ids[index],
+                "relative_path": dataset.relative_paths[index],
+                **information,
+                **values,
+            }
+            rows.append(row)
+
+            example = {
+                "sample_id": dataset.sample_ids[index],
+                "image": image,
+                "interior": interior,
+                "information": information,
+            }
+
+            if index in example_indices:
+                random_examples.append(example)
+
+            if not information["roi_valid"]:
+                invalid_rows.append(row)
+
+                if len(failed_examples) < 4:
+                    failed_examples.append(example)
+
+            if (index + 1) % 500 == 0 or index + 1 == len(dataset):
+                print(
+                    f"{name}: sharpness {index + 1}/{len(dataset)}",
+                    flush=True,
+                )
+
+        atomic_write_ssim_csv(
+            args.output_dir / f"{name}_sharpness.csv",
+            rows,
+        )
+
+        save_sharpness_roi_examples(
+            random_examples,
+            args.output_dir / f"{name}_random_roi_examples.png",
+        )
+
+        if failed_examples:
+            save_sharpness_roi_examples(
+                failed_examples,
+                args.output_dir / f"{name}_failed_roi_examples.png",
+            )
+
+        results[name] = summarize_sharpness_rows(rows)
+        rows_by_group[name] = rows
+
+        print(
+            f"{name}: valid ROI " f"{results[name]['valid_roi_count']}/{len(dataset)}",
+            flush=True,
+        )
+
+    # Empty failures are explicitly recorded as an empty JSON list.
+    atomic_write_json(
+        args.output_dir / "invalid_roi_records.json",
+        invalid_rows,
+    )
+
+    save_sharpness_distributions(
+        rows_by_group,
+        args.output_dir / "sharpness_distributions.png",
+    )
+
+    flat_summary = []
+
+    for name, summary in results.items():
+        for metric, statistics in summary["metrics"].items():
+            flat_summary.append(
+                {
+                    "group": name,
+                    "metric": metric,
+                    "total_images": summary["image_count"],
+                    "invalid_roi_count": summary["invalid_roi_count"],
+                    "count": statistics["count"],
+                    "mean": statistics.get("mean"),
+                    "std": statistics.get("std"),
+                    "median": statistics.get("median"),
+                    "q25": statistics.get("q25"),
+                    "q75": statistics.get("q75"),
+                    "p05": statistics.get("p05"),
+                    "p95": statistics.get("p95"),
+                }
+            )
+
+    atomic_write_ssim_csv(
+        args.output_dir / "sharpness_summary.csv",
+        flat_summary,
+    )
+
+    atomic_write_json(
+        args.output_dir / "sharpness_results.json",
+        {
+            "schema_version": 1,
+            "status": "complete",
+            "reference_split": reference_split,
+            "settings": settings,
+            "calibration_protocol": str(args.protocol.resolve()),
+            "calibration_protocol_sha256": file_sha256(args.protocol),
+            "cache_provenance": provenance,
+            "implementation_sha256": sharpness_implementation_hash(),
+            "versions": sharpness_versions(),
+            "results": results,
+            "invalid_roi_policy": (
+                "Retain full-image metrics; record interior metrics as null. "
+                "Do not replace or resample failed cases."
+            ),
+            "interpretation": (
+                "Compare distributions with real images; "
+                "higher values are not necessarily better."
+            ),
+            "completed_utc": utc_now(),
+        },
+    )
+
+
+def parse_sharpness_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Calibrate and evaluate Laplacian/Tenengrad sharpness."
+    )
+    parser.add_argument(
+        "--phase",
+        required=True,
+        choices=("calibrate", "cohort"),
+    )
+    parser.add_argument(
+        "--cohort-dir",
+        type=Path,
+        default=Path("evaluation/cohort_final_674672"),
+    )
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path("/home/groups/comp3710/ADNI/AD_NC"),
+    )
+    parser.add_argument("--cache-dir", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--protocol", type=Path, default=None)
+    parser.add_argument("--expected-count", type=int, default=5000)
+    parser.add_argument("--calibration-count", type=int, default=32)
+    parser.add_argument("--seed", type=int, default=2026)
+
+    # Calibration-only parameters; cohort reads frozen values from JSON.
+    parser.add_argument("--foreground-threshold", type=float, default=None)
+    parser.add_argument("--erosion-pixels", type=float, default=None)
+
+    args = parser.parse_args(argv)
+
+    if args.seed < 0:
+        parser.error("--seed must be non-negative.")
+
+    if args.expected_count < 2 or args.calibration_count < 2:
+        parser.error("Sample counts must be at least 2.")
+
+    if args.phase == "cohort":
+        if args.protocol is None:
+            parser.error("--phase cohort requires --protocol.")
+
+        if args.foreground_threshold is not None or args.erosion_pixels is not None:
+            parser.error(
+                "Cohort evaluation uses the frozen protocol; "
+                "ROI parameters can only be supplied during calibration."
+            )
+    else:
+        if args.foreground_threshold is None:
+            args.foreground_threshold = 0.05
+
+        if args.erosion_pixels is None:
+            args.erosion_pixels = 3.0
+
+        if not (
+            np.isfinite(args.foreground_threshold)
+            and 0.0 < args.foreground_threshold < 1.0
+        ):
+            parser.error("Foreground threshold must be between 0 and 1.")
+
+        if not (np.isfinite(args.erosion_pixels) and args.erosion_pixels >= 2.0):
+            parser.error("Erosion radius must be finite and at least 2 pixels.")
+
+    if args.cache_dir is None:
+        args.cache_dir = args.cohort_dir / "stage_b" / "features"
+
+    if args.output_dir is None:
+        directory = (
+            "sharpness_calibration" if args.phase == "calibrate" else "sharpness"
+        )
+        args.output_dir = args.cohort_dir / "stage_b" / directory
+
+    return args
+
+
+def sharpness_main(argv=None):
+    args = parse_sharpness_args(argv)
+
+    if args.output_dir.exists():
+        raise FileExistsError(
+            f"Output directory already exists: {args.output_dir}\n"
+            "Use a new --output-dir rather than overwriting an experiment."
+        )
+
+    if not args.cohort_dir.is_dir():
+        raise NotADirectoryError(args.cohort_dir)
+
+    if not args.data_root.is_dir():
+        raise NotADirectoryError(args.data_root)
+
+    args.output_dir.mkdir(parents=True)
+
+    status_path = args.output_dir / "run_status.json"
+    status = {
+        "status": "incomplete",
+        "phase": args.phase,
+        "started_utc": utc_now(),
+    }
+    atomic_write_json(status_path, status)
+
+    try:
+        if args.phase == "calibrate":
+            run_sharpness_calibration(args)
+        else:
+            run_sharpness_cohort(args)
+
+        status["status"] = "complete"
+        status["completed_utc"] = utc_now()
+        atomic_write_json(status_path, status)
+
+    except Exception as error:
+        status["status"] = "failed"
+        status["error"] = f"{type(error).__name__}: {error}"
+        atomic_write_json(status_path, status)
+        raise
+
+    print(
+        f"\nSharpness {args.phase} complete: " f"{args.output_dir.resolve()}",
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
     import sys
 
@@ -2006,6 +2857,9 @@ if __name__ == "__main__":
 
     elif len(sys.argv) > 1 and sys.argv[1] == "ssim":
         ssim_main(sys.argv[2:])
+
+    elif len(sys.argv) > 1 and sys.argv[1] == "sharpness":
+        sharpness_main(sys.argv[2:])
 
     else:
         main()

@@ -30,7 +30,7 @@ The prototype will be evaluated against the following criteria:
 1. The generated cohort should achieve approximately SSIM > 0.6 against appropriate reference anatomical images.
 2. StyleGAN2 should provide measurable improvement over the DCGAN baseline in structural fidelity and distribution fidelity.
 3. Generated samples and real-versus-synthetic embedding analysis should not show obvious mode collapse or severely restricted diversity.
-4. Nearest-neighbour analysis should not reveal obvious near-duplicate training images that would indicate potential emorisation.
+4. Nearest-neighbour analysis should not reveal obvious near-duplicate training images that would indicate potential memorisation.
 5. Training must remain feasible on the NVIDIA A100 40 GB GPU, with peak VRAM usage and training/generation runtime explicitly profiled.
 
 ### 2. Model Choice and Course Concepts
@@ -45,7 +45,7 @@ Compared with the original StyleGAN, StyleGAN2 improves the synthesis architectu
 
 An initial audit of the ADNI dataset will document the number of patients, usable slices, original image dimensions, preprocessing resolution and normalisation strategy. The evaluation set will be split off from the training set by patient. The DCGAN baseline is trained with the preprocessed ADNI data to establish initial quality and resource benchmarks. And StyleGAN2 will be trained using the same preprocessed datasets.
 
-An initial StyleGAN2 smoke test has successfully run on an NVIDIA A100-PCIE-40GB GPU in the cluster rangpur. At batch size 8, the first training epoch processed approximately 17.48 kimg and required 1191 s. Peak allocated GPU memory was 36.24 GiB and peak reserved memory was 36.46 GiB. The first epoch incurred additional GPU memory overhead from CUDA/cuDNN initialization and warm-up. Once the convolution algorithms and memory buffers had been initialised, subsequent epochs stabilised at below approximately 7 GiB of reserved VRAM.
+An initial StyleGAN2 smoke test has successfully run on an NVIDIA A100 40GB GPU in the cluster rangpur. At batch size 8, the first training epoch processed approximately 17.48 kimg and required 1191 s. Peak allocated GPU memory was 36.24 GiB and peak reserved memory was 36.46 GiB. The first epoch incurred additional GPU memory overhead from CUDA/cuDNN initialization and warm-up. Once the convolution algorithms and memory buffers had been initialised, subsequent epochs stabilised at below approximately 7 GiB of reserved VRAM.
 
 These results indicate that the current model configuration fits within the available 40 GB GPU memory, although training cost is significant.
 
@@ -159,7 +159,7 @@ Analyse at least 3–5 representative failure cases from the generated results.
 ### Failure Case 1 — TODO
 
 **Observed Failure:**  
-TODO
+stylegan2 000131
 
 **Possible Trigger:**  
 TODO
@@ -175,7 +175,7 @@ TODO
 ### Failure Case 2 — TODO
 
 **Observed Failure:**  
-TODO
+stylegan2 000158
 
 **Possible Trigger:**  
 TODO
@@ -191,7 +191,10 @@ TODO
 ### Failure Case 3 — TODO
 
 **Observed Failure:**  
-TODO
+stylegan2 000400
+stylegan2 001444
+stylegan2 001800
+stylegan2 003184
 
 **Possible Trigger:**  
 TODO
@@ -220,21 +223,25 @@ Summarise the central engineering dilemma.
 
 
 ## 19. Artificial Intelligence Usage Disclosure
-Generative AI tools were used during the development of this project.
+ChatGPT was used during the development of this project.
+Used to assist in learning, building network architectures and evaluation metrics, and debugging code.
 
 
 ## 20. Referneces
 
-[1] A. Radford, L. Metz, and S. Chintala, "Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks," *ICLR*, 2016. [Paper](https://arxiv.org/abs/1511.06434)
+[1] A. Radford, L. Metz, and S. Chintala, "Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks," in *Proc. ICLR*, 2016. [Paper](https://arxiv.org/abs/1511.06434)
 
-[2] T. Karras, S. Laine, and T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," *CVPR*, 2019. [Paper](https://arxiv.org/abs/1812.04948)
+[2] T. Karras, S. Laine, and T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," in *Proc. CVPR*, 2019. [Paper](https://arxiv.org/abs/1812.04948)
 
-[3] T. Karras et al., "Analyzing and Improving the Image Quality of StyleGAN," *CVPR*, 2020. [Paper](https://arxiv.org/abs/1912.04958)
+[3] T. Karras et al., "Analyzing and Improving the Image Quality of StyleGAN," in *Proc. CVPR*, 2020. [Paper](https://arxiv.org/abs/1912.04958)
 
-[4] NVIDIA Research (NVlabs), "StyleGAN2-ADA — Official PyTorch Implementation," GitHub Repository. [Online]. [Source Code](https://github.com/NVlabs/stylegan2-ada-pytorch)
+[4] NVIDIA Research (NVlabs), "StyleGAN2-ADA — Official PyTorch Implementation," GitHub Repository. [Online]. Available: https://github.com/NVlabs/stylegan2-ada-pytorch
 
-[5] Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, 2004. [Paper](https://doi.org/10.1109/TIP.2003.819861)
+[5] Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [Paper](https://doi.org/10.1109/TIP.2003.819861)
 
-[6] M. Heusel et al., "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS*, 2017. [Paper](https://arxiv.org/abs/1706.08500)
+[6] M. Heusel et al., "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," in *Proc. NeurIPS*, 2017. [Paper](https://arxiv.org/abs/1706.08500)
 
-[7] T. Karras et al., "Training Generative Adversarial Networks with Limited Data," *NeurIPS*, 2020. [Paper](https://arxiv.org/abs/2006.06676)
+[7] T. Karras et al., "Training Generative Adversarial Networks with Limited Data," in *Proc. NeurIPS*, 2020. [Paper](https://arxiv.org/abs/2006.06676)
+
+[8] S. Pertuz, D. Puig, and M. A. Garcia, "Analysis of Focus Measure Operators for Shape-from-Focus," *Pattern Recognition*, vol. 46, no. 5, pp. 1415–1432, 2013. [Paper](https://doi.org/10.1016/j.patcog.2012.11.011)
+
