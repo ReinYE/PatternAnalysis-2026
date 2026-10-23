@@ -776,10 +776,56 @@ considerably higher computational cost for the improved fidelity and diversity d
 
 ## 12. Failure Case Analysis
 
+<p align="center">
+<img src="evaluation/cohort_final_674672/stylegan2/images/000131.png" width="23%">
+<img src="evaluation/cohort_final_674672/stylegan2/images/000400.png" width="23%">
+<img src="evaluation/cohort_final_674672/stylegan2/images/003184.png" width="23%">
+<img src="evaluation/cohort_final_674672/stylegan2/images/000158.png" width="23%">
+<br>
+<em>
+Selected StyleGAN2 failures, left to right: 00131, 00400, 03184 and 00158.
+</em>
+</p>
+
+| Sample | Observed failure mode | Possible contributing mechanism |
+|---|---|---|
+| 00131 | Dense, repetitive high-frequency patterns obscure internal detail. | Learned texture repetition or synthesis/upsampling artefacts may produce strong edges without meaningful structure. |
+| 00400 | Grainy regions transition into smoother folds, producing inconsistent local texture and poorly resolved boundaries. | Local detail synthesis may not remain coherent with the larger-scale structure. |
+| 03184 | Low contrast and dark internal regions reduce visibility of tissue boundaries. | Unconditional sampling may reproduce or exaggerate intensity variation in the training distribution. |
+| 00158 | Thin bright rims and scattered pixels surround parts of the outer contour. | Sharp foreground–background transitions may expose boundary artefacts from synthesis and resampling. |
+
+These examples show that plausible overall shape can coexist with local texture, contrast and boundary failures. 
+They also explain why sharpness alone is insufficient since artificial edges can increase its score. 
+
 ## 13. Engineering Discussion and Limitations
+
+StyleGAN2 provides a stronger quality–diversity trade-off than DCGAN in this experiment. 
+Its lower FID, real-like pairwise similarity distribution and better projections support the 
+additional model complexity. However, the substantially greater training and inference cost makes 
+it more suitable for offline cohort generation than resource-constrained deployment.
+
+The comparison evaluates complete implementations, not architecture alone, including batch sizes, 
+regularisation and sampling weights differ, and equal epoch counts do not imply equal computational budgets. 
+These results show that StyleGAN2 outperformed DCGAN in this experiment. Further runs with different 
+random seeds and component ablations are needed to assess consistency and identify the contribution of each mechanism.
+
+Evaluation also has important boundaries. SSIM and sharpness depend on geometry, background and texture. 
+The training and test sets share data from the same patients, which may limit claims about the 
+unseen-patient generalisation of models. The memorisation audit therefore uses patient-disjoint 
+validation controls.
+
+Finally, the model generates unconditional 2D slices rather than diagnosis-controlled images. 
+Future work could introduce AD/NC conditioning, add slice-position conditioning to control the 
+anatomical level, and investigate artefact reduction to improve local texture and boundary consistency.
 
 ## 14. Conclusion
 
+The custom StyleGAN2 implementation without ADA outperformed the DCGAN baseline on distributional 
+fidelity and output diversity, reducing FID from 93.536 to 7.506. This improvement required 
+substantially greater computational resources and did not eliminate local image artefacts.
+
+The project demonstrates the feasibility of generating varied ADNI-like 2D MRI slices for further 
+research. Clinical usefulness and privacy-safe release remain unestablished.
 ## 15. Usage
 
 ## 16. Artificial Intelligence Usage Disclosure
