@@ -151,7 +151,7 @@ s_{\ell}=A_{\ell}(w).
 $$
 
 <p align="center">
-<img src="images/chapter4/stylegan_architecture.png" width="70%">
+<img src="images/chapter4/stylegan_architecture.png" width="30%">
 <br>
 <em>
 Figure 1. Mapping and synthesis networks of the original StyleGAN. From Karras et al. [2], Fig. 1(b). 
@@ -181,7 +181,7 @@ relative feature magnitudes. StyleGAN2 replaces explicit feature-map instance no
 weight modulation and demodulation.
 
 <p align="center">
-<img src="images/chapter4/stylegan2_weight_demodulation.png" width="100%">
+<img src="images/chapter4/stylegan2_weight_demodulation.png" width="80%">
 <br>
 <em>
 Figure 2. Redesign of the StyleGAN synthesis layer. From Karras et al. [3], Fig. 2. 
