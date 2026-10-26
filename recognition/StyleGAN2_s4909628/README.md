@@ -384,7 +384,7 @@ The following grids show the first 16 images from each exported evaluation cohor
 without selection by visual quality.
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/dcgan/previews/group_01.png" width="50%">
+<img src="images/chapter7/dcgan_generated_samples.png" width="50%">
 <br>
 <em>
 DCGAN samples from the final evaluation cohort.
@@ -393,7 +393,7 @@ DCGAN samples from the final evaluation cohort.
 
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stylegan2/previews/group_01.png" width="50%">
+<img src="images/chapter7/stylegan2_generated_samples.png" width="50%">
 <br>
 <em>
 StyleGAN2 samples from the final evaluation cohort.
@@ -434,7 +434,7 @@ were not matched ground-truth images.
 | StyleGAN2 | 0.6747 ± 0.0355 | 0.6765 | 97.74% |
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_b/ssim/figures/ssim_distribution.png" width="80%">
+<img src="images/chapter7/reference_paired_ssim_distribution.png" width="80%">
 <br>
 <em>
 SSIM distributions for generated images paired with their nearest real references in Inception feature space.
@@ -463,7 +463,7 @@ image detail; higher scores therefore do not necessarily indicate better image q
 | StyleGAN2 | 0.04928 | 0.00881 |
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_b/sharpness/sharpness_distributions.png" width="80%">
+<img src="images/chapter7/sharpness_distributions.png" width="80%">
 <br>
 <em>
 Empirical cumulative distributions of Laplacian variance and Tenengrad for full images and foreground interiors.
@@ -473,7 +473,7 @@ Empirical cumulative distributions of Laplacian variance and Tenengrad for full 
 <details>
 <summary>Sharpness calibration with blur and noise</summary>
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_b/sharpness_calibration/calibration_distributions.png" width="80%">
+<img src="images/chapter7/sharpness_calibration_distributions.png" width="80%">
 <br>
 <em>
 Controlled perturbations demonstrate sensitivity to both blur and noise.
@@ -495,7 +495,7 @@ The three cohorts were jointly embedded using PCA to 50 dimensions, followed by 
 perplexity 30 and seed 2026.
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_c/embedding_diversity/embedding/tsne_p30_seed2026_panels.png" width="100%">
+<img src="images/chapter8/tsne_real_and_generated_samples.png" width="100%">
 <br>
 <em>
 Group-specific views of the same joint t-SNE embedding; grey points show the remaining cohorts.
@@ -525,7 +525,7 @@ real-image reference restricted to different patients. Unlike Section 7.3, no ne
 | StyleGAN2 | 0.6642 | 0.6663 | 0.7177 |
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_c/embedding_diversity/pairwise_ssim/pairwise_ssim_ecdf.png" width="80%">
+<img src="images/chapter8/pairwise_ssim_ecdf.png" width="80%">
 <br>
 <em>
 Within-cohort pairwise SSIM distributions, including a real cross-patient reference.
@@ -551,7 +551,7 @@ sensitive to shared background and slice geometry.
 <summary>Examples of near-identical DCGAN outputs</summary>
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_c/embedding_diversity/pairwise_ssim/dcgan_highest_pairs.png" width="80%">
+<img src="images/chapter8/dcgan_highest_ssim_pairs.png" width="80%">
 <br>
 <em>
 The four highest-SSIM pairs among the sampled DCGAN pairs. Distinct generated samples reproduce 
@@ -569,7 +569,7 @@ Each generated image was compared against all 17,480 training slices using Eucli
 Inception feature space. Real validation images from patients absent from training provided the primary control.
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_c/memorization/nearest_train_distance_ecdf.png" width="80%">
+<img src="images/chapter9/nearest_training_distance_ecdf.png" width="80%">
 <br>
 <em>
 Nearest-training-image distance distributions. The dashed line marks the first percentile of the validation control distances.
@@ -637,19 +637,19 @@ Nine frames were generated along each path, using spherical interpolation in Z a
 interpolation in StyleGAN2's shared W space. StyleGAN2 synthesis noise was held constant.
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/dcgan/random_interpolation/pair_00/z_slerp/interpolation.png" width="100%">
+<img src="images/chapter10/dcgan_random_z_interpolation.png" width="100%">
 <br>
 <em>DCGAN: the first sampled Z interpolation.</em>
 </p>
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/random_interpolation/pair_00/z_slerp/interpolation.png" width="100%">
+<img src="images/chapter10/stylegan2_random_z_interpolation.png" width="100%">
 <br>
 <em>StyleGAN2: the first sampled Z interpolation.</em>
 </p>
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/random_interpolation/pair_00/w_lerp/interpolation.png" width="100%">
+<img src="images/chapter10/stylegan2_random_w_interpolation.png" width="100%">
 <br>
 <em>StyleGAN2: W interpolation between the mapped versions of the same endpoints.</em>
 </p>
@@ -680,13 +680,13 @@ Foreground MAE uses the union of target and reconstruction pixels with intensity
 Metrics are calculated from exported images after clipping and uint8 conversion.
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/dcgan/projection/validation_AD_00/reconstruction_comparison.png" width="80%">
+<img src="images/chapter10/dcgan_validation_ad_projection.png" width="80%">
 <br>
 <em>DCGAN projection of the selected validation AD slice.</em>
 </p>
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/projection/validation_AD_00/reconstruction_comparison.png" width="80%">
+<img src="images/chapter10/stylegan2_validation_ad_projection.png" width="80%">
 <br>
 <em>StyleGAN2 projection of the same target.</em>
 </p>
@@ -708,7 +708,7 @@ a population-level reconstruction advantage or a training-versus-validation gene
 ### 10.3 Interpolation Involving Projected Images
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/synthetic_to_projection/validation_AD_00/interpolation.png" width="100%">
+<img src="images/chapter10/stylegan2_synthetic_to_validation_ad_interpolation.png" width="100%">
 <br>
 <em>
 StyleGAN2 interpolation from a random generated image to the validation AD projection. The final reference image is the real target.
@@ -716,7 +716,7 @@ StyleGAN2 interpolation from a random generated image to the validation AD proje
 </p>
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stage_e/latent_analysis/stylegan2/projected_real_interpolation/AD_00/interpolation.png" width="100%">
+<img src="images/chapter10/stylegan2_projected_ad_interpolation.png" width="100%">
 <br>
 <em>
 StyleGAN2 interpolation between two projected AD targets. The outermost images are real references; 
@@ -777,10 +777,10 @@ considerably higher computational cost for the improved fidelity and diversity d
 ## 12. Failure Case Analysis
 
 <p align="center">
-<img src="evaluation/cohort_final_674672/stylegan2/images/000131.png" width="23%">
-<img src="evaluation/cohort_final_674672/stylegan2/images/000400.png" width="23%">
-<img src="evaluation/cohort_final_674672/stylegan2/images/003184.png" width="23%">
-<img src="evaluation/cohort_final_674672/stylegan2/images/000158.png" width="23%">
+<img src="images/chapter12/stylegan2_failure_000131_repetitive_texture.png" width="23%">
+<img src="images/chapter12/stylegan2_failure_000400_inconsistent_texture.png" width="23%">
+<img src="images/chapter12/stylegan2_failure_003184_low_contrast.png" width="23%">
+<img src="images/chapter12/stylegan2_failure_000158_boundary_artefacts.png" width="23%">
 <br>
 <em>
 Selected StyleGAN2 failures, left to right: 00131, 00400, 03184 and 00158.
