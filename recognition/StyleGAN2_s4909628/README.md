@@ -320,9 +320,13 @@ StyleGAN2_s4909628/
 ├── dataset.py
 ├── train.py
 ├── predict.py
-├── eval*.py
-├── export*.py
-├── audit_memorization.py
+├── utils/
+│   ├── dcgan.sh
+│   ├── stylegan2.sh
+│   ├── eval*.py
+│   ├── export*.py
+│   ├── audit_memorization.py
+│   └── *.sh
 ├── splits/
 ├── runs/
 ├── evaluation/
@@ -336,7 +340,7 @@ StyleGAN2_s4909628/
 | `dataset.py` | Associates slices with patients, manages fixed partitions, and provides image datasets and data loaders. |
 | `train.py` | Contains training and validation routines, configuration handling, checkpointing and resource measurements. The current main entry point runs StyleGAN2. |
 | `predict.py` | Reconstructs generators from checkpoint configurations and produces sample grids, selecting EMA weights for StyleGAN2 when available. |
-| `eval*.py`, `export*.py`, `audit_memorization.py` | Export fixed evaluation cohorts, compute metrics and visualisations, and perform training-set memorisation analysis. |
+| `utils/` | Contains evaluation utilities for cohort export, quality and diversity metrics, visualisation, memorisation auditing and latent-space analysis. |
 | `splits/`, `runs/`, `evaluation/` | Store dataset manifests, training outputs and evaluation artefacts, respectively. |
 
 ### 5.2 Implementation and Experiment Management
@@ -792,9 +796,7 @@ Selected StyleGAN2 failures, left to right: 00131, 00400, 03184 and 00158.
 | 00131 | Dense, repetitive high-frequency patterns obscure internal detail. | Learned texture repetition or synthesis/upsampling artefacts may produce strong edges without meaningful structure. |
 | 00400 | Grainy regions transition into smoother folds, producing inconsistent local texture and poorly resolved boundaries. | Local detail synthesis may not remain coherent with the larger-scale structure. |
 | 03184 | Low contrast and dark internal regions reduce visibility of tissue boundaries. | Unconditional sampling may reproduce or exaggerate intensity variation in the training distribution. |
-| 00158 | Thin bright rims and scattered pixels surround parts of the outer contour. | Sharp foreground–background transitions may expose boundary artefacts from synthesis and resampling. |
-
-These examples show that plausible overall shape can coexist with local texture, contrast and boundary failures. 
+| 00158 | Parts of the outer edge are surrounded by thin, bright borders and some scattered dots. | These examples show that plausible overall shape can coexist with local texture, contrast and boundary failures. 
 They also explain why sharpness alone is insufficient since artificial edges can increase its score. 
 
 ## 13. Engineering Discussion and Limitations
@@ -826,7 +828,60 @@ substantially greater computational resources and did not eliminate local image 
 
 The project demonstrates the feasibility of generating varied ADNI-like 2D MRI slices for further 
 research. Clinical usefulness and privacy-safe release remain unestablished.
+
 ## 15. Usage
+
+Run commands from the `StyleGAN2_s4909628` directory containing
+`train.py`, not from `utils/`. The cluster scripts expect a configured
+Conda environment named `torch` and access to the course ADNI data.
+Data paths and model settings are defined in `build_config()`.
+
+### 15.1 Training
+
+Create the log directory before submitting a job:
+
+```bash
+mkdir -p logs
+sbatch utils/stylegan2.sh 20 --batch-size 64
+```
+
+This starts a new StyleGAN2 run with a total target of 20 epochs. The script requests one GPU, 
+four CPUs and a ten-hour time limit.
+
+### 15.2 Resuming Training
+
+To continue a completed 20-epoch run to 40 epochs:
+
+```bash
+sbatch utils/stylegan2.sh 40 \
+  --batch-size 64 \
+  --resume runs/<run_name>/checkpoints/latest.pt
+```
+
+Replace `<run_name>` with the existing run directory. The epoch argument specifies the total target, 
+not the number of additional epochs. Batch size and worker count must match the saved configuration.
+
+Each run stores checkpoints, generated previews, configuration and training history 
+under `runs/<run_name>/`. Slurm logs are written to `logs/`.
+
+### 15.3 Generating Images
+
+Within an allocated GPU session, generate a reproducible sample grid:
+
+```bash
+conda run --no-capture-output -n torch \
+  python predict.py \
+  --checkpoint runs/<run_name>/checkpoints/final.pt \
+  --output outputs/generated_grid.png \
+  --num-images 16 \
+  --nrow 4 \
+  --seed 42
+```
+
+The checkpoint determines the generator architecture; StyleGAN2 uses EMA weights when enabled.
+
+The current training entry point runs StyleGAN2. The retained `utils/dcgan.sh` is a historical job 
+script and requires the DCGAN training entry point before it can reproduce the baseline.
 
 ## 16. Artificial Intelligence Usage Disclosure
 ChatGPT was used during the development of this project.
